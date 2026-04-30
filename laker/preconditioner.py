@@ -14,6 +14,25 @@ from laker.utils import (
 logger = logging.getLogger(__name__)
 
 
+def _preconditioner_apply_core(
+    x: torch.Tensor,
+    isotropic_coef: float,
+    q_basis: torch.Tensor,
+    q_eigenvalues: torch.Tensor,
+    q_eigenvectors: torch.Tensor,
+) -> torch.Tensor:
+    """Core of the preconditioner apply ``P = Sigma^{-1/2}``."""
+    inv_sqrt_isotropic = isotropic_coef ** (-0.5)
+    q_basis_projection = q_basis.T @ x
+    coeffs = q_eigenvectors.T @ q_basis_projection
+    if x.dim() == 1:
+        coeffs = (q_eigenvalues.rsqrt() - inv_sqrt_isotropic) * coeffs
+    else:
+        coeffs = (q_eigenvalues.rsqrt() - inv_sqrt_isotropic).unsqueeze(-1) * coeffs
+    q_correction = q_basis @ (q_eigenvectors @ coeffs)
+    return inv_sqrt_isotropic * x + q_correction
+
+
 class CCCPPreconditioner:
     """Learned data-dependent preconditioner for attention kernel regression.
 
@@ -76,7 +95,6 @@ class CCCPPreconditioner:
         self.nr: Optional[int] = None
         self.q_basis: Optional[torch.Tensor] = None  # (n, nr) orthonormal
         self.qr_r: Optional[torch.Tensor] = None  # (nr, nr) from QR
-        self.r_column_norms_sq: Optional[torch.Tensor] = None  # (nr,)
         self.isotropic_coef: Optional[float] = None
         self.q_basis_matrix: Optional[torch.Tensor] = None  # (nr, nr)
         self.q_eigenvalues: Optional[torch.Tensor] = None  # (nr,)
@@ -110,10 +128,6 @@ class CCCPPreconditioner:
         q_basis, qr_r = torch.linalg.qr(normalized_probes, mode="reduced")
         self.q_basis = q_basis  # (n, nr)
         self.qr_r = qr_r  # (nr, nr)
-        # Precompute ||r_k||^2 = ||R e_k||^2 for each probe
-        identity_nr = torch.eye(self.nr, device=self.device, dtype=self.dtype)
-        r_columns = qr_r @ identity_nr  # (nr, nr)
-        self.r_column_norms_sq = torch.sum(r_columns**2, dim=0)  # (nr,)
 
         # 3. CCCP iteration (Eq. 35-37)
         shrinkage = adaptive_shrinkage_rho(self.nr, n, self.gamma, self.base_rho)
@@ -121,31 +135,28 @@ class CCCPPreconditioner:
         isotropic_coef = 1.0
         q_basis_matrix = torch.zeros(self.nr, self.nr, device=self.device, dtype=self.dtype)
 
-        # Cache identity matrix to avoid repeated allocation in the loop
-        eye_nr = identity_nr
+        # Pre-allocate buffers reused each iteration
+        eye_nr = torch.eye(self.nr, device=self.device, dtype=self.dtype)
+        factored_matrix = torch.empty(self.nr, self.nr, device=self.device, dtype=self.dtype)
+        f_gamma_q_basis = torch.empty(self.nr, self.nr, device=self.device, dtype=self.dtype)
+        shrunken_f_gamma = torch.empty(self.nr, self.nr, device=self.device, dtype=self.dtype)
 
         for iteration in range(self.max_iter):
             isotropic_coef_prev = isotropic_coef
             q_basis_matrix_prev = q_basis_matrix.clone()
 
             # Form M = isotropic_coef * I + q_basis_matrix and decompose
-            factored_matrix = isotropic_coef * eye_nr + q_basis_matrix
+            torch.add(eye_nr * isotropic_coef, q_basis_matrix, out=factored_matrix)
             factored_eigvals, factored_eigvecs = eigh_stable(factored_matrix, eps=self.epsilon)
 
-            # Compute denominators for all probes efficiently
-            # denom_k = a^{-1} + (R^T M^{-1} R)_{kk} - a^{-1} ||r_k||^2
-            factored_inverse = factored_eigvecs @ (
-                factored_eigvals.reciprocal().unsqueeze(-1) * factored_eigvecs.T
-            )
-            r_inv_m_r = self.qr_r.T @ factored_inverse @ self.qr_r
-            diag_of_r_inv_m_r = torch.diagonal(r_inv_m_r)
-            inv_isotropic_coef = 1.0 / isotropic_coef
-            probe_denominators = (
-                inv_isotropic_coef
-                + diag_of_r_inv_m_r
-                - inv_isotropic_coef * self.r_column_norms_sq
-                + self.epsilon
-            )
+            # Compute denominators: denom_k = (R^T M^{-1} R)_{kk} + epsilon.
+            # Avoid materialising the full inverse by working in the eigenbasis:
+            #   R^T M^{-1} R = (V^T R)^T * diag(1/eig) * (V^T R)
+            vtr = factored_eigvecs.T @ self.qr_r  # (nr, nr)
+            # Scale columns of vtr by reciprocal eigenvalues
+            scaled_vtr = factored_eigvals.reciprocal().unsqueeze(-1) * vtr
+            r_inv_m_r = vtr.T @ scaled_vtr
+            probe_denominators = torch.diagonal(r_inv_m_r) + self.epsilon
 
             # Weights w_k = (n / N_r) / denom_k
             probe_weights = (n / self.nr) / probe_denominators  # (nr,)
@@ -155,17 +166,16 @@ class CCCPPreconditioner:
             # In Q basis: u_bar u_bar^T = Q R W R^T Q^T where W = diag(weights)
             r_weighted_by_probe = self.qr_r * probe_weights.unsqueeze(0)  # (nr, nr)
             weighted_r_r_transpose = r_weighted_by_probe @ self.qr_r.T  # (nr, nr)
-            f_gamma_q_basis = (1.0 / regularization_scale) * (
-                weighted_r_r_transpose + self.gamma * eye_nr
+            torch.mul(
+                weighted_r_r_transpose + self.gamma * eye_nr,
+                1.0 / regularization_scale,
+                out=f_gamma_q_basis,
             )
 
             # Shrinkage: (1-rho) * F + rho * I
-            shrunken_f_gamma = (1.0 - shrinkage) * f_gamma_q_basis + shrinkage * eye_nr
+            torch.lerp(f_gamma_q_basis, eye_nr, shrinkage, out=shrunken_f_gamma)
 
             # Normalisation: preserve trace(Sigma) = n.
-            # Sigma_tilde = shrunken_isotropic_coef * I + Q * C_f * Q^T
-            # where shrunken_isotropic_coef is the orthogonal complement coefficient
-            # and C_f = shrunken_f_gamma - shrunken_isotropic_coef * I.
             shrunken_isotropic_coef = (
                 1.0 - shrinkage
             ) * self.gamma / regularization_scale + shrinkage
@@ -175,7 +185,9 @@ class CCCPPreconditioner:
             trace_scale = self.n / full_space_trace
 
             isotropic_coef = trace_scale * shrunken_isotropic_coef
-            q_basis_matrix = trace_scale * shrunken_f_gamma - isotropic_coef * eye_nr
+            # q_basis_matrix = trace_scale * shrunken_f_gamma - isotropic_coef * I
+            torch.mul(shrunken_f_gamma, trace_scale, out=q_basis_matrix)
+            q_basis_matrix.diagonal().sub_(isotropic_coef)
 
             # Convergence check
             isotropic_rel = abs(isotropic_coef - isotropic_coef_prev) / (
@@ -199,9 +211,9 @@ class CCCPPreconditioner:
         self.q_basis_matrix = q_basis_matrix
 
         # Final eigendecomposition of M = isotropic_coef * I + q_basis_matrix for fast applies
-        final_factored_matrix = isotropic_coef * eye_nr + q_basis_matrix
+        torch.add(eye_nr * isotropic_coef, q_basis_matrix, out=factored_matrix)
         self.q_eigenvalues, self.q_eigenvectors = eigh_stable(
-            final_factored_matrix, eps=self.epsilon
+            factored_matrix, eps=self.epsilon
         )
 
         if self.verbose:
@@ -242,15 +254,13 @@ class CCCPPreconditioner:
         Returns:
             Tensor of the same shape as ``x``.
         """
-        inv_sqrt_isotropic = self.isotropic_coef ** (-0.5)
-        q_basis_projection = self.q_basis.T @ x  # (nr,) or (nr, k)
-        coeffs = self.q_eigenvectors.T @ q_basis_projection  # (nr,) or (nr, k)
-        if x.dim() == 1:
-            coeffs = (self.q_eigenvalues.rsqrt() - inv_sqrt_isotropic) * coeffs
-        else:
-            coeffs = (self.q_eigenvalues.rsqrt() - inv_sqrt_isotropic).unsqueeze(-1) * coeffs
-        q_correction = self.q_basis @ (self.q_eigenvectors @ coeffs)  # (n,) or (n, k)
-        return inv_sqrt_isotropic * x + q_correction
+        return _preconditioner_apply_core(
+            x,
+            self.isotropic_coef,
+            self.q_basis,
+            self.q_eigenvalues,
+            self.q_eigenvectors,
+        )
 
     def apply_1d(self, x: torch.Tensor) -> torch.Tensor:
         """Apply P to a single vector.

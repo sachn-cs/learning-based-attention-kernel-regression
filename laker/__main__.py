@@ -48,7 +48,9 @@ def main() -> None:
         description="LAKER: Learning-based Attention Kernel Regression",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
-    parser.add_argument("--version", action="version", version="%(prog)s 0.1.0")
+    from laker import __version__
+
+    parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     parser.add_argument("-v", "--verbose", action="store_true", help="Enable debug logging")
 
     subparsers = parser.add_subparsers(dest="command")

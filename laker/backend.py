@@ -9,7 +9,7 @@ import torch
 logger = logging.getLogger(__name__)
 
 DEFAULT_DEVICE: torch.device = torch.device("cpu")
-DEFAULT_DTYPE: torch.dtype = torch.float64
+DEFAULT_DTYPE: torch.dtype = torch.float32
 
 
 def get_default_device() -> torch.device:
@@ -53,6 +53,23 @@ def set_default_dtype(dtype: torch.dtype) -> None:
     global DEFAULT_DTYPE
     DEFAULT_DTYPE = dtype
     logger.info("Default dtype set to %s", dtype)
+
+
+def maybe_compile(func, mode: str = "reduce-overhead"):
+    """Compile a function with ``torch.compile`` when PyTorch 2.x is available.
+
+    Falls back to the uncompiled function on older PyTorch versions.
+
+    Args:
+        func: Callable to compile.
+        mode: Compilation mode (default ``reduce-overhead``).
+
+    Returns:
+        Compiled function or the original function.
+    """
+    if hasattr(torch, "compile"):
+        return torch.compile(func, mode=mode)
+    return func
 
 
 def to_tensor(

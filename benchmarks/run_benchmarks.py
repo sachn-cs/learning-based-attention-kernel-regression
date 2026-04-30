@@ -140,7 +140,7 @@ def benchmark_full_fit(n: int = 500) -> dict:
     model.fit(x_train, y_train)
     elapsed = (time.perf_counter() - start) * 1000
 
-    return {"n": n, "fit_ms": elapsed, "pcg_iters": model.kernel_operator.n}
+    return {"n": n, "fit_ms": elapsed, "pcg_iters": getattr(model, "pcg_iterations_", None)}
 
 
 if __name__ == "__main__":

@@ -29,6 +29,14 @@ class PositionEmbedding(nn.Module):
         seed: Random seed for reproducible Fourier frequencies.
         device: torch device.
         dtype: torch dtype.
+
+    Warning:
+        This module temporarily manipulates the **global** PyTorch RNG state
+        (``torch.manual_seed``) during initialisation to make the MLP weight
+        init deterministic.  Concurrent initialisation from multiple threads
+        can therefore produce non-deterministic results.  Instantiate
+        ``PositionEmbedding`` objects sequentially, or pass a pre-initialised
+        ``embedding_module`` to ``LAKERRegressor`` if thread safety is required.
     """
 
     def __init__(
@@ -54,6 +62,8 @@ class PositionEmbedding(nn.Module):
         if dtype is None:
             dtype = get_default_dtype()
 
+        # 1. Fourier frequencies and phases are drawn from a dedicated Generator
+        #    so they are independent of the global PyTorch RNG.
         gen = torch.Generator(device=device).manual_seed(seed)
         self.register_buffer(
             "freq",
@@ -64,13 +74,19 @@ class PositionEmbedding(nn.Module):
             torch.rand(num_fourier, generator=gen, device=device, dtype=dtype) * 2.0 * math.pi,
         )
 
-        # Small deterministic MLP: num_fourier -> embedding_dim
+        # 2. MLP weights use PyTorch's default init (kaiming_uniform_) with the
+        #    *global* RNG temporarily seeded for reproducibility.  This keeps
+        #    backward compatibility with the original LAKER paper code while
+        #    still making the overall module deterministic.
         mlp_hidden = max(embedding_dim, num_fourier // 2)
+        _saved_state = torch.get_rng_state()
+        torch.manual_seed(seed)
         self.mlp = nn.Sequential(
             nn.Linear(num_fourier, mlp_hidden, device=device, dtype=dtype),
             nn.Tanh(),
             nn.Linear(mlp_hidden, embedding_dim, device=device, dtype=dtype),
         )
+        torch.set_rng_state(_saved_state)
 
         self.to(device=device, dtype=dtype)
 
@@ -95,3 +111,5 @@ class PositionEmbedding(nn.Module):
             f"input_dim={self.input_dim}, embedding_dim={self.embedding_dim}, "
             f"num_fourier={self.num_fourier}, sigma={self.sigma}"
         )
+
+

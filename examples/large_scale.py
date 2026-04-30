@@ -41,7 +41,7 @@ def large_scale_demo(n: int = 5000) -> None:
         pcg_max_iter=1000,
         chunk_size=1024,
         device=device,
-        dtype=torch.float32,
+        dtype=torch.float64,
         verbose=True,
     )
     model.fit(x_train, y_train)

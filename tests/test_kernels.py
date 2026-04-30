@@ -31,11 +31,12 @@ def test_kernel_matvec_consistency():
     g.diagonal().add_(lam)
     y_dense = g @ x
 
-    torch.testing.assert_close(y_op, y_dense, rtol=1e-5, atol=1e-6)
+    torch.testing.assert_close(y_op, y_dense, rtol=1e-4, atol=1e-5)
 
 
 def test_kernel_matvec_chunked_consistency():
     """Chunked matvec must match full matvec."""
+    torch.manual_seed(42)
     n = 100
     de = 6
     e = torch.randn(n, de)
