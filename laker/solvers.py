@@ -114,7 +114,12 @@ class PreconditionedConjugateGradient:
                 if self.breakdown_eps is not None
                 else torch.finfo(p.dtype).eps ** 0.5
             )
-            if p_dot_ap <= -eps * torch.linalg.norm(p).item() * torch.linalg.norm(matrix_vector_product).item():
+            if (
+                p_dot_ap
+                <= -eps
+                * torch.linalg.norm(p).item()
+                * torch.linalg.norm(matrix_vector_product).item()
+            ):
                 raise RuntimeError(
                     "PCG breakdown: non-positive curvature detected (p^T A p <= 0). "
                     "The operator may be indefinite or the preconditioner may be unsuitable."
@@ -134,7 +139,9 @@ class PreconditionedConjugateGradient:
                 self.iterations = iteration + 1
                 if self.verbose:
                     logger.info(
-                        "PCG converged in %d iterations, rel_res=%.3e", self.iterations, relative_residual
+                        "PCG converged in %d iterations, rel_res=%.3e",
+                        self.iterations,
+                        relative_residual,
                     )
                 return x
 
@@ -146,7 +153,9 @@ class PreconditionedConjugateGradient:
 
         self.iterations = max_iter
         if self.verbose:
-            logger.warning("PCG did not converge in %d iterations, rel_res=%.3e", max_iter, relative_residual)
+            logger.warning(
+                "PCG did not converge in %d iterations, rel_res=%.3e", max_iter, relative_residual
+            )
         return x
 
     def solve_2d(
@@ -171,7 +180,12 @@ class PreconditionedConjugateGradient:
                 if self.breakdown_eps is not None
                 else torch.finfo(p.dtype).eps ** 0.5
             )
-            if torch.any(p_dot_ap <= -eps * torch.linalg.norm(p, dim=0) * torch.linalg.norm(matrix_vector_product, dim=0)):
+            if torch.any(
+                p_dot_ap
+                <= -eps
+                * torch.linalg.norm(p, dim=0)
+                * torch.linalg.norm(matrix_vector_product, dim=0)
+            ):
                 raise RuntimeError(
                     "PCG breakdown: non-positive curvature detected (p^T A p <= 0). "
                     "The operator may be indefinite or the preconditioner may be unsuitable."
@@ -191,7 +205,9 @@ class PreconditionedConjugateGradient:
                 self.iterations = iteration + 1
                 if self.verbose:
                     logger.info(
-                        "PCG converged in %d iterations, rel_res=%.3e", self.iterations, relative_residual
+                        "PCG converged in %d iterations, rel_res=%.3e",
+                        self.iterations,
+                        relative_residual,
                     )
                 return x
 
@@ -203,7 +219,9 @@ class PreconditionedConjugateGradient:
 
         self.iterations = max_iter
         if self.verbose:
-            logger.warning("PCG did not converge in %d iterations, rel_res=%.3e", max_iter, relative_residual)
+            logger.warning(
+                "PCG did not converge in %d iterations, rel_res=%.3e", max_iter, relative_residual
+            )
         return x
 
 

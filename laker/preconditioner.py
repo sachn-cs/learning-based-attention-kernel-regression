@@ -151,7 +151,9 @@ class CCCPPreconditioner:
             #   R^T M^{-1} R = (V^T R)^T * diag(1/eig) * (V^T R)
             eigenbasis_projection = factored_eigvecs.T @ self.qr_r  # (nr, nr)
             # Scale columns of eigenbasis_projection by reciprocal eigenvalues
-            scaled_eigenbasis_projection = factored_eigvals.reciprocal().unsqueeze(-1) * eigenbasis_projection
+            scaled_eigenbasis_projection = (
+                factored_eigvals.reciprocal().unsqueeze(-1) * eigenbasis_projection
+            )
             inverse_m_r_product = eigenbasis_projection.T @ scaled_eigenbasis_projection
             probe_denominators = torch.diagonal(inverse_m_r_product) + self.epsilon
 

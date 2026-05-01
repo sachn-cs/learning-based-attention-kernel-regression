@@ -468,7 +468,9 @@ class LAKERRegressor:
             for gamma_value in gamma_grid:
                 for num_probes_value in num_probes_grid:
                     try:
-                        kernel_op = self.build_kernel_operator(train_embeddings, lambda_reg=lambda_reg_value)
+                        kernel_op = self.build_kernel_operator(
+                            train_embeddings, lambda_reg=lambda_reg_value
+                        )
                         precond = self.build_preconditioner(
                             kernel_op.matvec,
                             train_embeddings.shape[0],
@@ -619,7 +621,14 @@ class LAKERRegressor:
                 int(round(float(point[2]))),
             )
             rmse = self.bo_eval(
-                train_embeddings, x[val_idx], y, train_idx, val_idx, lambda_reg_value, gamma_value, num_probes_value
+                train_embeddings,
+                x[val_idx],
+                y,
+                train_idx,
+                val_idx,
+                lambda_reg_value,
+                gamma_value,
+                num_probes_value,
             )
             X_obs.append(point)
             y_obs.append(rmse)
@@ -641,9 +650,20 @@ class LAKERRegressor:
             ei = gp.expected_improvement(candidates)
             next_point = candidates[np.argmax(ei)]
 
-            lambda_reg_value, gamma_value, num_probes_value = next_point[0], next_point[1], int(round(next_point[2]))
+            lambda_reg_value, gamma_value, num_probes_value = (
+                next_point[0],
+                next_point[1],
+                int(round(next_point[2])),
+            )
             rmse = self.bo_eval(
-                train_embeddings, x[val_idx], y, train_idx, val_idx, lambda_reg_value, gamma_value, num_probes_value
+                train_embeddings,
+                x[val_idx],
+                y,
+                train_idx,
+                val_idx,
+                lambda_reg_value,
+                gamma_value,
+                num_probes_value,
             )
             X_obs.append(next_point)
             y_obs.append(rmse)

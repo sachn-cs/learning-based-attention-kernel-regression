@@ -183,7 +183,9 @@ class DistributedAttentionKernelOperator:
             return self.local_op.kernel_eval(x, y, chunk_size=chunk_size)
         # Gather all training embeddings
         full_y = (
-            torch.cat([operator.embeddings.to(self.master_device) for operator in self.operators], dim=0)
+            torch.cat(
+                [operator.embeddings.to(self.master_device) for operator in self.operators], dim=0
+            )
             if y is None
             else y
         )

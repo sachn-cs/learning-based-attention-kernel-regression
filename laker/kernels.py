@@ -626,7 +626,9 @@ class SparseKNNAttentionKernelOperator:
         for i_start in range(0, n, chunk_size_local):
             i_end = min(i_start + chunk_size_local, n)
             # Euclidean distance in embedding space; self is always distance 0
-            dists = torch.cdist(self.embeddings[i_start:i_end], self.embeddings)  # (chunk_size_local, n)
+            dists = torch.cdist(
+                self.embeddings[i_start:i_end], self.embeddings
+            )  # (chunk_size_local, n)
             # k-1 nearest neighbours + self (distance 0)
             topk = torch.topk(dists, min(k, n), largest=False, dim=1)
             row_idx = (
@@ -947,7 +949,11 @@ class SKIAttentionKernelOperator:
         # 1-D grids per dimension
         grid_1d = [
             torch.linspace(
-                mins[i].item(), maxs[i].item(), grid_points_per_dimension, device=self.device, dtype=self.dtype
+                mins[i].item(),
+                maxs[i].item(),
+                grid_points_per_dimension,
+                device=self.device,
+                dtype=self.dtype,
             )
             for i in range(d)
         ]
@@ -962,7 +968,10 @@ class SKIAttentionKernelOperator:
 
         # Normalise grid to [0, 1] as well (so grid_1d_norm[i][j] = j/(gpd-1))
         grid_1d_norm = [
-            torch.linspace(0.0, 1.0, grid_points_per_dimension, device=self.device, dtype=self.dtype) for _ in range(d)
+            torch.linspace(
+                0.0, 1.0, grid_points_per_dimension, device=self.device, dtype=self.dtype
+            )
+            for _ in range(d)
         ]
 
         indices, weights = multilinear_weights(norm_embed, grid_1d_norm)
@@ -1047,7 +1056,10 @@ class SKIAttentionKernelOperator:
         d = self.embedding_dim
         grid_points_per_dimension = self.grid_points_per_dim
         grid_1d_norm = [
-            torch.linspace(0.0, 1.0, grid_points_per_dimension, device=self.device, dtype=self.dtype) for _ in range(d)
+            torch.linspace(
+                0.0, 1.0, grid_points_per_dimension, device=self.device, dtype=self.dtype
+            )
+            for _ in range(d)
         ]
         mins = torch.stack([g[0] for g in self.grid_1d])
         maxs = torch.stack([g[-1] for g in self.grid_1d])
