@@ -19,8 +19,8 @@ import torch
 
 from benchmarks.executor import BenchmarkExecutor
 from laker.embeddings import PositionEmbedding
-from laker.kernels import AttentionKernelOperator
 from laker.kernels import (
+    AttentionKernelOperator,
     NystromAttentionKernelOperator,
     RandomFeatureAttentionKernelOperator,
     SKIAttentionKernelOperator,

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-from typing import Callable, Optional, Union, cast
+from typing import Any, Callable, Optional, Union, cast
 
 import numpy
 import torch
@@ -218,7 +218,7 @@ class LAKERRegressor:
         if chunk_size_local is None and n > 5000:
             chunk_size_local = max(1024, min(n // 10, 8192))
             if self.verbose:
-                logger.info("Auto-selected chunk_size=%d for n=%d", cs, n)
+                logger.info("Auto-selected chunk_size=%d for n=%d", chunk_size_local, n)
 
         operator: KernelOperator
         if self.kernel_approx is None:
@@ -1445,8 +1445,9 @@ class LAKERRegressor:
 
             input_dim = state.get("input_dim", 2)
             embed_dtype = embedding_dtype if embedding_dtype else dtype
+            embed_cls: Callable[..., Any] = cls
             if class_name == "PositionEmbedding":
-                model.embedding_model = cls(
+                model.embedding_model = embed_cls(
                     input_dim=input_dim,
                     embedding_dim=model.embedding_dim,
                     device=model.device,
@@ -1454,7 +1455,7 @@ class LAKERRegressor:
                 )
             else:
                 try:
-                    model.embedding_model = cls(
+                    model.embedding_model = embed_cls(
                         input_dim=input_dim,
                         embedding_dim=model.embedding_dim,
                         device=model.device,

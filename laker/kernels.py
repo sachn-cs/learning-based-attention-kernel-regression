@@ -912,8 +912,8 @@ class SKIAttentionKernelOperator:
         actual_grid = grid_points_per_dimension**d
         if actual_grid > grid_size:
             raise ValueError(
-                f"Cannot build product grid: {grid_points_per_dimension}^{d}={actual_grid} > {grid_size}. "
-                "Use a larger grid_size or lower embedding_dim."
+                f"Cannot build product grid: {grid_points_per_dimension}^{d}={actual_grid} "
+                f"> {grid_size}. Use a larger grid_size or lower embedding_dim."
             )
 
         if self.dtype == torch.float32 and actual_grid > 8192:

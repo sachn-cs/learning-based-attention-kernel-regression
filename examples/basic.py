@@ -4,8 +4,8 @@ import logging
 from typing import Optional
 
 import torch
-from examples.executor import ExampleExecutor
 
+from examples.executor import ExampleExecutor
 from laker.models import LAKERRegressor
 
 logger = logging.getLogger(__name__)

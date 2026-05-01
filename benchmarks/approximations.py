@@ -6,8 +6,8 @@ from typing import Optional
 import torch
 
 from benchmarks.executor import BenchmarkExecutor
-from laker.kernels import AttentionKernelOperator
 from laker.kernels import (
+    AttentionKernelOperator,
     NystromAttentionKernelOperator,
     RandomFeatureAttentionKernelOperator,
 )
