@@ -3,12 +3,10 @@
 import tempfile
 
 import torch
-import torch.nn as nn
+from custom_embed import CustomEmbedding
 
 from laker.embeddings import PositionEmbedding
 from laker.models import LAKERRegressor
-
-from custom_embed import CustomEmbedding
 
 
 def test_position_embedding_determinism():

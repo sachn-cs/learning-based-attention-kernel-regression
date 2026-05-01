@@ -32,3 +32,60 @@ def test_generate_grid():
     assert grid.shape == (100, 2)
     assert grid[0, 0].item() == 0.0
     assert grid[-1, 0].item() == 100.0
+
+
+def test_generate_radio_field_bad_locations():
+    """1-D locations should raise ValueError."""
+    import pytest
+
+    locs = torch.randn(5)
+    tx = torch.tensor([[1.0, 1.0]])
+    pwr = torch.tensor([-40.0])
+    with pytest.raises(ValueError, match="locations must be 2-D"):
+        generate_radio_field(locs, tx, pwr)
+
+
+def test_generate_radio_field_bad_transmitters():
+    """1-D transmitters should raise ValueError."""
+    import pytest
+
+    locs = torch.rand(5, 2)
+    tx = torch.tensor([1.0, 1.0])
+    pwr = torch.tensor([-40.0])
+    with pytest.raises(ValueError, match="transmitters must be 2-D"):
+        generate_radio_field(locs, tx, pwr)
+
+
+def test_generate_radio_field_bad_powers():
+    """2-D powers should raise ValueError."""
+    import pytest
+
+    locs = torch.rand(5, 2)
+    tx = torch.tensor([[1.0, 1.0]])
+    pwr = torch.tensor([[-40.0]])
+    with pytest.raises(ValueError, match="powers must be 1-D"):
+        generate_radio_field(locs, tx, pwr)
+
+
+def test_generate_radio_field_mismatched_tx_powers():
+    """Mismatched tx and powers lengths should raise ValueError."""
+    import pytest
+
+    locs = torch.rand(5, 2)
+    tx = torch.tensor([[1.0, 1.0], [2.0, 2.0]])
+    pwr = torch.tensor([-40.0])
+    with pytest.raises(ValueError, match="transmitters and powers must have same length"):
+        generate_radio_field(locs, tx, pwr)
+
+
+def test_generate_radio_field_mismatched_dimensions():
+    """Mismatched spatial dimensions should raise ValueError."""
+    import pytest
+
+    locs = torch.rand(5, 2)
+    tx = torch.tensor([[1.0, 1.0, 1.0]])
+    pwr = torch.tensor([-40.0])
+    with pytest.raises(
+        ValueError, match="locations and transmitters must have same spatial dimension"
+    ):
+        generate_radio_field(locs, tx, pwr)

@@ -219,6 +219,14 @@ breakdown detection (`p^T A p <= 0`). Optional residual replacement
 is **disabled by default** because it causes catastrophic cancellation in
 float32.
 
+## Design Patterns
+
+The codebase follows a documented set of conventions described in
+[`docs/patterns.md`](docs/patterns.md). Key patterns include the **Executor**
+abstraction for structured logging and timing, and the **Class + Convenience
+Wrapper** rule that requires every public workflow to have a class
+implementation.
+
 ## How to Run
 
 ### Installation
@@ -361,16 +369,19 @@ model.fit(x_train, y_train)
 
 ```bash
 # Full reproducible benchmark suite (fixed seeds, statistics)
-python benchmarks/reproducible_benchmarks.py
+python -m benchmarks.reproducible
 
 # Baseline vs optimised comparison
-python benchmarks/compare_baseline.py
+python -m benchmarks.baseline
+
+# Approximation speed comparison
+python -m benchmarks.approximations
 
 # Legacy quick benchmarks
-python benchmarks/run_benchmarks.py
+python -m benchmarks.run
 ```
 
-Results are written to `benchmarks/results.md`.
+Results are written to `benchmarks/README.md`.
 
 ### Command-line interface
 

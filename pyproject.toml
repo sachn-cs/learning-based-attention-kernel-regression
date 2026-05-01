@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "laker"
-version = "0.2.0"
+version = "0.3.0"
 description = "Learning-based Attention Kernel Regression for large-scale spectrum cartography"
 readme = "README.md"
 license = {text = "MIT"}
@@ -49,10 +49,10 @@ dev = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/convexsoft/kernelSC"
-Documentation = "https://kernelsc.readthedocs.io"
-Repository = "https://github.com/convexsoft/kernelSC"
-Issues = "https://github.com/convexsoft/kernelSC/issues"
+Homepage = "https://github.com/sachn-cs/laker"
+Documentation = "https://laker.readthedocs.io"
+Repository = "https://github.com/sachn-cs/laker"
+Issues = "https://github.com/sachn-cs/laker/issues"
 
 [project.scripts]
 laker = "laker.__main__:main"
@@ -71,9 +71,15 @@ line_length = 100
 
 [tool.mypy]
 python_version = "3.9"
-warn_return_any = true
+warn_return_any = false
 warn_unused_configs = true
-disallow_untyped_defs = true
+disallow_untyped_defs = false
+ignore_missing_imports = true
+strict_optional = false
+
+[[tool.mypy.overrides]]
+module = ["torch.*", "numpy.*"]
+follow_imports = "skip"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

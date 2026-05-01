@@ -53,20 +53,20 @@ class DistributedAttentionKernelOperator:
         self.master_device = master_device
         self.dtype = dtype
         self.shape = (self.n, self.n)
+        # Delegating to AttentionKernelOperator for the single-device path.
+        # For multi-device the local ops have their own skip_clamp.
+        self.skip_clamp = True
 
         # Detect CUDA devices
         if torch.cuda.is_available():
-            self.devices = [
-                torch.device(f"cuda:{i}")
-                for i in range(torch.cuda.device_count())
-            ]
+            self.devices = [torch.device(f"cuda:{i}") for i in range(torch.cuda.device_count())]
         else:
             self.devices = [master_device]
 
         if len(self.devices) == 1:
             # Single device: just wrap a normal operator
-            self._single_device = True
-            self._local_op = AttentionKernelOperator(
+            self.single_device = True
+            self.local_op = AttentionKernelOperator(
                 embeddings=embeddings.to(device=master_device, dtype=dtype),
                 lambda_reg=lambda_reg,
                 chunk_size=None,
@@ -75,11 +75,11 @@ class DistributedAttentionKernelOperator:
             )
             return
 
-        self._single_device = False
+        self.single_device = False
         # Shard embeddings across devices
-        self._shard_embeddings(embeddings.to(dtype=dtype))
+        self.shard_embeddings(embeddings.to(dtype=dtype))
 
-    def _shard_embeddings(self, embeddings: torch.Tensor) -> None:
+    def shard_embeddings(self, embeddings: torch.Tensor) -> None:
         """Split embeddings evenly among available devices."""
         n = embeddings.shape[0]
         num_dev = len(self.devices)
@@ -87,20 +87,20 @@ class DistributedAttentionKernelOperator:
         for i in range(n % num_dev):
             chunk_sizes[i] += 1
 
-        self._chunk_sizes = chunk_sizes
-        self._operators = []
+        self.chunk_sizes = chunk_sizes
+        self.operators = []
         start = 0
-        for dev, cs in zip(self.devices, chunk_sizes):
-            end = start + cs
-            local_embed = embeddings[start:end].to(device=dev)
-            op = AttentionKernelOperator(
-                embeddings=local_embed,
+        for device, chunk_size_local in zip(self.devices, chunk_sizes):
+            end = start + chunk_size_local
+            local_embeddings = embeddings[start:end].to(device=device)
+            operator = AttentionKernelOperator(
+                embeddings=local_embeddings,
                 lambda_reg=self.lambda_reg,
                 chunk_size=None,
-                device=dev,
+                device=device,
                 dtype=self.dtype,
             )
-            self._operators.append(op)
+            self.operators.append(operator)
             start = end
 
     def matvec(self, x: torch.Tensor) -> torch.Tensor:
@@ -109,41 +109,41 @@ class DistributedAttentionKernelOperator:
         Automatically handles device movement and gathers results back to
         ``master_device``.
         """
-        if self._single_device:
-            return self._local_op.matvec(x)
+        if self.single_device:
+            return self.local_op.matvec(x)
 
         # Gather full embeddings to master, then replicate to each device
         # Each device computes its local output chunk:
-        #   out[start:end] = lambda*x[start:end] + exp(local_embed @ full_embed.T) @ x
+        #   out[start:end] = lambda*x[start:end] + exp(local_embeddings @ full_embed.T) @ x
         x_master = x.to(self.master_device)
-        full_embed = torch.cat([
-            op.embeddings.to(self.master_device) for op in self._operators
-        ], dim=0)
+        full_embed = torch.cat(
+            [operator.embeddings.to(self.master_device) for operator in self.operators], dim=0
+        )
 
         outputs = []
         start = 0
-        for op in self._operators:
-            dev = op.embeddings.device
-            local_embed = op.embeddings
-            ln = local_embed.shape[0]
-            end = start + ln
+        for operator in self.operators:
+            device = operator.embeddings.device
+            local_embeddings = operator.embeddings
+            local_size = local_embeddings.shape[0]
+            end = start + local_size
 
             # Move full vector and full embeddings to device
-            x_dev = x_master.to(dev)
-            full_dev = full_embed.to(dev)
+            device_tensor = x_master.to(device)
+            full_embeddings_device = full_embed.to(device)
 
             # Compute local chunk with 1-D chunking over the reduction dim
             # to keep peak memory bounded
-            cs = 8192  # chunk size for gram blocks
-            local_out = self.lambda_reg * x_dev
-            for j_start in range(0, self.n, cs):
-                j_end = min(j_start + cs, self.n)
-                gram_block = local_embed @ full_dev[j_start:j_end].T
+            chunk_size_local = 8192  # chunk size for gram blocks
+            local_out = self.lambda_reg * device_tensor
+            for j_start in range(0, self.n, chunk_size_local):
+                j_end = min(j_start + chunk_size_local, self.n)
+                gram_block = local_embeddings @ full_embeddings_device[j_start:j_end].T
                 torch.exp(gram_block, out=gram_block)
-                if x_dev.dim() == 1:
-                    local_out[start:end].addmv_(gram_block, x_dev[j_start:j_end])
+                if device_tensor.dim() == 1:
+                    local_out[start:end].addmv_(gram_block, device_tensor[j_start:j_end])
                 else:
-                    local_out[start:end].addmm_(gram_block, x_dev[j_start:j_end])
+                    local_out[start:end].addmm_(gram_block, device_tensor[j_start:j_end])
 
             outputs.append(local_out[start:end].to(self.master_device))
             start = end
@@ -152,21 +152,21 @@ class DistributedAttentionKernelOperator:
 
     def diagonal(self) -> torch.Tensor:
         """Return diagonal of ``lambda I + G``."""
-        if self._single_device:
-            return self._local_op.diagonal()
+        if self.single_device:
+            return self.local_op.diagonal()
         diags = []
-        for op in self._operators:
-            diags.append(op.diagonal().to(self.master_device))
+        for operator in self.operators:
+            diags.append(operator.diagonal().to(self.master_device))
         return torch.cat(diags)
 
     def to_dense(self) -> torch.Tensor:
         """Materialise full dense matrix on ``master_device``."""
-        if self._single_device:
-            return self._local_op.to_dense()
+        if self.single_device:
+            return self.local_op.to_dense()
         # Gather all embeddings to master device
-        full_embed = torch.cat([
-            op.embeddings.to(self.master_device) for op in self._operators
-        ], dim=0)
+        full_embed = torch.cat(
+            [operator.embeddings.to(self.master_device) for operator in self.operators], dim=0
+        )
         gram = full_embed @ full_embed.T
         torch.exp(gram, out=gram)
         gram.diagonal().add_(self.lambda_reg)
@@ -179,12 +179,14 @@ class DistributedAttentionKernelOperator:
         chunk_size: Optional[int] = None,
     ) -> torch.Tensor:
         """Evaluate exact kernel between queries and training points."""
-        if self._single_device:
-            return self._local_op.kernel_eval(x, y, chunk_size=chunk_size)
+        if self.single_device:
+            return self.local_op.kernel_eval(x, y, chunk_size=chunk_size)
         # Gather all training embeddings
-        full_y = torch.cat([
-            op.embeddings.to(self.master_device) for op in self._operators
-        ], dim=0) if y is None else y
+        full_y = (
+            torch.cat([operator.embeddings.to(self.master_device) for operator in self.operators], dim=0)
+            if y is None
+            else y
+        )
         gram = x @ full_y.T
         torch.exp(gram, out=gram)
         return gram

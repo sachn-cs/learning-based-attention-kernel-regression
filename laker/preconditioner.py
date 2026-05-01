@@ -6,15 +6,12 @@ from typing import Callable, Optional
 import torch
 
 from laker.backend import get_default_device, get_default_dtype
-from laker.utils import (
-    adaptive_shrinkage_rho,
-    eigh_stable,
-)
+from laker.utils import adaptive_shrinkage_rho, eigh_stable
 
 logger = logging.getLogger(__name__)
 
 
-def _preconditioner_apply_core(
+def preconditioner_apply_core(
     x: torch.Tensor,
     isotropic_coef: float,
     q_basis: torch.Tensor,
@@ -152,11 +149,11 @@ class CCCPPreconditioner:
             # Compute denominators: denom_k = (R^T M^{-1} R)_{kk} + epsilon.
             # Avoid materialising the full inverse by working in the eigenbasis:
             #   R^T M^{-1} R = (V^T R)^T * diag(1/eig) * (V^T R)
-            vtr = factored_eigvecs.T @ self.qr_r  # (nr, nr)
-            # Scale columns of vtr by reciprocal eigenvalues
-            scaled_vtr = factored_eigvals.reciprocal().unsqueeze(-1) * vtr
-            r_inv_m_r = vtr.T @ scaled_vtr
-            probe_denominators = torch.diagonal(r_inv_m_r) + self.epsilon
+            eigenbasis_projection = factored_eigvecs.T @ self.qr_r  # (nr, nr)
+            # Scale columns of eigenbasis_projection by reciprocal eigenvalues
+            scaled_eigenbasis_projection = factored_eigvals.reciprocal().unsqueeze(-1) * eigenbasis_projection
+            inverse_m_r_product = eigenbasis_projection.T @ scaled_eigenbasis_projection
+            probe_denominators = torch.diagonal(inverse_m_r_product) + self.epsilon
 
             # Weights w_k = (n / N_r) / denom_k
             probe_weights = (n / self.nr) / probe_denominators  # (nr,)
@@ -212,9 +209,7 @@ class CCCPPreconditioner:
 
         # Final eigendecomposition of M = isotropic_coef * I + q_basis_matrix for fast applies
         torch.add(eye_nr * isotropic_coef, q_basis_matrix, out=factored_matrix)
-        self.q_eigenvalues, self.q_eigenvectors = eigh_stable(
-            factored_matrix, eps=self.epsilon
-        )
+        self.q_eigenvalues, self.q_eigenvectors = eigh_stable(factored_matrix, eps=self.epsilon)
 
         if self.verbose:
             logger.info("CCCP preconditioner built in %d iterations", iteration + 1)
@@ -245,7 +240,7 @@ class CCCPPreconditioner:
             return self.apply_2d(x)
         raise ValueError(f"x must be 1-D or 2-D, got shape {x.shape}")
 
-    def _apply_impl(self, x: torch.Tensor) -> torch.Tensor:
+    def apply_impl(self, x: torch.Tensor) -> torch.Tensor:
         """Shared implementation for apply_1d and apply_2d.
 
         Args:
@@ -254,7 +249,7 @@ class CCCPPreconditioner:
         Returns:
             Tensor of the same shape as ``x``.
         """
-        return _preconditioner_apply_core(
+        return preconditioner_apply_core(
             x,
             self.isotropic_coef,
             self.q_basis,
@@ -271,7 +266,7 @@ class CCCPPreconditioner:
         Returns:
             Tensor of shape ``(n,)``.
         """
-        return self._apply_impl(x)
+        return self.apply_impl(x)
 
     def apply_2d(self, x: torch.Tensor) -> torch.Tensor:
         """Apply P to a batch of vectors (matrix).
@@ -282,7 +277,7 @@ class CCCPPreconditioner:
         Returns:
             Tensor of shape ``(n, k)``.
         """
-        return self._apply_impl(x)
+        return self.apply_impl(x)
 
     def to_dense(self) -> torch.Tensor:
         """Materialise the full dense preconditioner matrix ``P = Sigma^{-1/2}``.

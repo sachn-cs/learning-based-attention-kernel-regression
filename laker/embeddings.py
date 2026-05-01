@@ -79,14 +79,14 @@ class PositionEmbedding(nn.Module):
         #    backward compatibility with the original LAKER paper code while
         #    still making the overall module deterministic.
         mlp_hidden = max(embedding_dim, num_fourier // 2)
-        _saved_state = torch.get_rng_state()
+        saved_state = torch.get_rng_state()
         torch.manual_seed(seed)
         self.mlp = nn.Sequential(
             nn.Linear(num_fourier, mlp_hidden, device=device, dtype=dtype),
             nn.Tanh(),
             nn.Linear(mlp_hidden, embedding_dim, device=device, dtype=dtype),
         )
-        torch.set_rng_state(_saved_state)
+        torch.set_rng_state(saved_state)
 
         self.to(device=device, dtype=dtype)
 
@@ -111,5 +111,3 @@ class PositionEmbedding(nn.Module):
             f"input_dim={self.input_dim}, embedding_dim={self.embedding_dim}, "
             f"num_fourier={self.num_fourier}, sigma={self.sigma}"
         )
-
-

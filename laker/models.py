@@ -3,26 +3,36 @@
 from __future__ import annotations
 
 import logging
-from typing import Callable, Optional, Union
+from typing import Callable, Optional, Union, cast
 
 import numpy
 import torch
 import torch.nn as nn
 
 from laker.backend import get_default_device, get_default_dtype, to_tensor
+from laker.distributed_kernels import DistributedAttentionKernelOperator
 from laker.embeddings import PositionEmbedding
-from laker.kernels import AttentionKernelOperator, _exp_safe
-from laker.low_rank_kernels import (
+from laker.kernels import (
+    AttentionKernelOperator,
     NystromAttentionKernelOperator,
     RandomFeatureAttentionKernelOperator,
+    SKIAttentionKernelOperator,
+    SparseKNNAttentionKernelOperator,
+    exp_safe,
 )
 from laker.preconditioner import CCCPPreconditioner
 from laker.solvers import PreconditionedConjugateGradient
-from laker.sparse_kernels import SparseKNNAttentionKernelOperator
-from laker.ski_kernels import SKIAttentionKernelOperator
-from laker.distributed_kernels import DistributedAttentionKernelOperator
 
 logger = logging.getLogger(__name__)
+
+KernelOperator = Union[
+    AttentionKernelOperator,
+    NystromAttentionKernelOperator,
+    RandomFeatureAttentionKernelOperator,
+    SparseKNNAttentionKernelOperator,
+    SKIAttentionKernelOperator,
+    DistributedAttentionKernelOperator,
+]
 
 
 class LAKERRegressor:
@@ -116,7 +126,10 @@ class LAKERRegressor:
         if pcg_max_iter <= 0:
             raise ValueError(f"pcg_max_iter must be positive, got {pcg_max_iter}")
         if kernel_approx not in (None, "nystrom", "rff", "knn", "ski"):
-            raise ValueError(f"kernel_approx must be None, 'nystrom', 'rff', 'knn', or 'ski', got {kernel_approx}")
+            raise ValueError(
+                "kernel_approx must be None, 'nystrom', 'rff', 'knn', or 'ski', "
+                f"got {kernel_approx}"
+            )
         if k_neighbors is not None and k_neighbors <= 0:
             raise ValueError(f"k_neighbors must be positive, got {k_neighbors}")
         if grid_size is not None and grid_size < 2:
@@ -156,10 +169,10 @@ class LAKERRegressor:
         self.embeddings: Optional[torch.Tensor] = None
         self.alpha: Optional[torch.Tensor] = None
         self.preconditioner: Optional[CCCPPreconditioner] = None
-        self.kernel_operator: Optional[AttentionKernelOperator] = None
+        self.kernel_operator: Optional[KernelOperator] = None
         self.embedding_model: Optional[nn.Module] = None
 
-    def _compute_embeddings(self, x: torch.Tensor) -> torch.Tensor:
+    def compute_embeddings(self, x: torch.Tensor) -> torch.Tensor:
         """Build or reuse embeddings from spatial locations."""
         n = x.shape[0]
         input_dim = x.shape[1]
@@ -167,11 +180,11 @@ class LAKERRegressor:
         if self.verbose:
             logger.info("Fitting LAKER on n=%d, dx=%d", n, input_dim)
 
-        x_embed = x.to(dtype=self.embedding_dtype)
+        embedded_input = x.to(dtype=self.embedding_dtype)
         if self.embedding_module is not None:
             self.embedding_model = self.embedding_module.to(self.device)
             with torch.no_grad():
-                embeddings = self.embedding_model(x_embed)
+                embeddings = self.embedding_model(embedded_input)
         else:
             self.embedding_model = PositionEmbedding(
                 input_dim=input_dim,
@@ -180,7 +193,7 @@ class LAKERRegressor:
                 dtype=self.embedding_dtype,
             )
             with torch.no_grad():
-                embeddings = self.embedding_model(x_embed)
+                embeddings = self.embedding_model(embedded_input)
 
         if self.embedding_dtype != self.dtype:
             embeddings = embeddings.to(dtype=self.dtype)
@@ -192,47 +205,48 @@ class LAKERRegressor:
                 )
         return embeddings
 
-    def _build_kernel_operator(
+    def build_kernel_operator(
         self,
         embeddings: torch.Tensor,
         lambda_reg: Optional[float] = None,
         chunk_size: Optional[int] = None,
-    ) -> Union[AttentionKernelOperator, NystromAttentionKernelOperator, RandomFeatureAttentionKernelOperator]:
+    ) -> KernelOperator:
         """Construct the kernel operator for given embeddings."""
         n = embeddings.shape[0]
-        lam = float(lambda_reg) if lambda_reg is not None else self.lambda_reg
-        cs = chunk_size
-        if cs is None and n > 5000:
-            cs = max(1024, min(n // 10, 8192))
+        lambda_value = float(lambda_reg) if lambda_reg is not None else self.lambda_reg
+        chunk_size_local = chunk_size
+        if chunk_size_local is None and n > 5000:
+            chunk_size_local = max(1024, min(n // 10, 8192))
             if self.verbose:
                 logger.info("Auto-selected chunk_size=%d for n=%d", cs, n)
 
+        operator: KernelOperator
         if self.kernel_approx is None:
             operator = AttentionKernelOperator(
                 embeddings=embeddings,
-                lambda_reg=lam,
-                chunk_size=cs,
+                lambda_reg=lambda_value,
+                chunk_size=chunk_size_local,
                 device=self.device,
                 dtype=self.dtype,
             )
         elif self.kernel_approx == "nystrom":
             operator = NystromAttentionKernelOperator(
                 embeddings=embeddings,
-                lambda_reg=lam,
+                lambda_reg=lambda_value,
                 num_landmarks=self.num_landmarks,
-                chunk_size=cs,
+                chunk_size=chunk_size_local,
                 device=self.device,
                 dtype=self.dtype,
             )
             if self.verbose:
                 logger.info(
                     "Using Nyström approximation with m=%d landmarks",
-                    operator.m,
+                    cast(NystromAttentionKernelOperator, operator).m,
                 )
         elif self.kernel_approx == "rff":
             operator = RandomFeatureAttentionKernelOperator(
                 embeddings=embeddings,
-                lambda_reg=lam,
+                lambda_reg=lambda_value,
                 num_features=self.num_features,
                 device=self.device,
                 dtype=self.dtype,
@@ -240,26 +254,26 @@ class LAKERRegressor:
             if self.verbose:
                 logger.info(
                     "Using RFF approximation with r=%d features",
-                    operator.num_features,
+                    cast(RandomFeatureAttentionKernelOperator, operator).num_features,
                 )
         elif self.kernel_approx == "knn":
             operator = SparseKNNAttentionKernelOperator(
                 embeddings=embeddings,
-                lambda_reg=lam,
+                lambda_reg=lambda_value,
                 k_neighbors=self.k_neighbors,
-                chunk_size=cs,
+                chunk_size=chunk_size_local,
                 device=self.device,
                 dtype=self.dtype,
             )
             if self.verbose:
                 logger.info(
                     "Using sparse k-NN approximation with k=%d neighbours",
-                    operator.k_neighbors,
+                    cast(SparseKNNAttentionKernelOperator, operator).k_neighbors,
                 )
         elif self.kernel_approx == "ski":
             operator = SKIAttentionKernelOperator(
                 embeddings=embeddings,
-                lambda_reg=lam,
+                lambda_reg=lambda_value,
                 grid_size=self.grid_size,
                 device=self.device,
                 dtype=self.dtype,
@@ -267,25 +281,25 @@ class LAKERRegressor:
             if self.verbose:
                 logger.info(
                     "Using SKI approximation with %d grid points",
-                    operator.grid_points.shape[0],
+                    cast(SKIAttentionKernelOperator, operator).grid_points.shape[0],
                 )
         elif self.distributed and self.kernel_approx is None:
             operator = DistributedAttentionKernelOperator(
                 embeddings=embeddings,
-                lambda_reg=lam,
+                lambda_reg=lambda_value,
                 master_device=self.device,
                 dtype=self.dtype,
             )
             if self.verbose:
                 logger.info(
                     "Using distributed kernel on %d device(s)",
-                    len(operator.devices),
+                    len(cast(DistributedAttentionKernelOperator, operator).devices),
                 )
         else:
             raise ValueError(f"Unknown kernel_approx={self.kernel_approx}")
         return operator
 
-    def _build_preconditioner(
+    def build_preconditioner(
         self,
         matvec: Callable[[torch.Tensor], torch.Tensor],
         n: int,
@@ -293,7 +307,7 @@ class LAKERRegressor:
         num_probes: Optional[int] = None,
     ) -> CCCPPreconditioner:
         """Learn the CCCP preconditioner for a given matvec."""
-        pre = CCCPPreconditioner(
+        preconditioner = CCCPPreconditioner(
             num_probes=num_probes if num_probes is not None else self.num_probes,
             gamma=gamma if gamma is not None else self.gamma,
             epsilon=self.epsilon,
@@ -304,12 +318,12 @@ class LAKERRegressor:
             device=self.device,
             dtype=self.dtype,
         )
-        pre.build(matvec, n)
-        return pre
+        preconditioner.build(matvec, n)
+        return preconditioner
 
-    def _solve_pcg(
+    def solve_pcg(
         self,
-        kernel_operator: Union[AttentionKernelOperator, NystromAttentionKernelOperator, RandomFeatureAttentionKernelOperator],
+        kernel_operator: KernelOperator,
         preconditioner: CCCPPreconditioner,
         rhs: torch.Tensor,
         x0: Optional[torch.Tensor] = None,
@@ -365,12 +379,12 @@ class LAKERRegressor:
         if y.dim() != 1:
             raise ValueError(f"y must be 1-D, got shape {y.shape}")
 
-        self.embeddings = self._compute_embeddings(x)
-        self.kernel_operator = self._build_kernel_operator(self.embeddings)
-        self.preconditioner = self._build_preconditioner(
+        self.embeddings = self.compute_embeddings(x)
+        self.kernel_operator = self.build_kernel_operator(self.embeddings)
+        self.preconditioner = self.build_preconditioner(
             self.kernel_operator.matvec, self.embeddings.shape[0]
         )
-        self.alpha, self.pcg_iterations_ = self._solve_pcg(
+        self.alpha, self.pcg_iterations_ = self.solve_pcg(
             self.kernel_operator, self.preconditioner, y, x0=x0
         )
         return self
@@ -433,7 +447,7 @@ class LAKERRegressor:
             num_probes_grid = [50, 100, 200]
 
         # Compute embeddings once from all x (deterministic, no y leakage)
-        full_embeddings = self._compute_embeddings(x)
+        full_embeddings = self.compute_embeddings(x)
         train_embeddings = full_embeddings[train_idx]
 
         best_rmse = float("inf")
@@ -450,20 +464,18 @@ class LAKERRegressor:
             )
 
         x0 = None
-        for lam in lambda_reg_grid:
-            for gam in gamma_grid:
-                for nprobes in num_probes_grid:
+        for lambda_reg_value in lambda_reg_grid:
+            for gamma_value in gamma_grid:
+                for num_probes_value in num_probes_grid:
                     try:
-                        kernel_op = self._build_kernel_operator(
-                            train_embeddings, lambda_reg=lam
-                        )
-                        precond = self._build_preconditioner(
+                        kernel_op = self.build_kernel_operator(train_embeddings, lambda_reg=lambda_reg_value)
+                        precond = self.build_preconditioner(
                             kernel_op.matvec,
                             train_embeddings.shape[0],
-                            gamma=gam,
-                            num_probes=nprobes,
+                            gamma=gamma_value,
+                            num_probes=num_probes_value,
                         )
-                        alpha, _ = self._solve_pcg(
+                        alpha, _ = self.solve_pcg(
                             kernel_op,
                             precond,
                             y[train_idx],
@@ -483,21 +495,27 @@ class LAKERRegressor:
                         if self.verbose:
                             logger.warning(
                                 "Trial failed: lambda=%.3e gamma=%.3e probes=%d (%s)",
-                                lam, gam, nprobes, exc,
+                                lambda_reg_value,
+                                gamma_value,
+                                num_probes_value,
+                                exc,
                             )
 
                     if rmse < best_rmse:
                         best_rmse = rmse
                         best_params = {
-                            "lambda_reg": lam,
-                            "gamma": gam,
-                            "num_probes": nprobes,
+                            "lambda_reg": lambda_reg_value,
+                            "gamma": gamma_value,
+                            "num_probes": num_probes_value,
                         }
                         best_alpha = alpha
                         if self.verbose:
                             logger.info(
                                 "New best: lambda=%.3e gamma=%.3e probes=%d val_rmse=%.4f",
-                                lam, gam, nprobes, rmse,
+                                lambda_reg_value,
+                                gamma_value,
+                                num_probes_value,
+                                rmse,
                             )
 
                     if warm_start and best_alpha is not None:
@@ -506,7 +524,8 @@ class LAKERRegressor:
         if not best_params:
             raise RuntimeError(
                 "Grid search failed: all parameter combinations diverged or raised errors. "
-                "Try widening lambda_reg_grid, increasing pcg_max_iter, or using dtype=torch.float64."
+                "Try widening lambda_reg_grid, increasing pcg_max_iter, "
+                "or using dtype=torch.float64."
             )
 
         if self.verbose:
@@ -518,9 +537,9 @@ class LAKERRegressor:
             )
 
         # Apply best params and fit on full data
-        self.lambda_reg = best_params["lambda_reg"]
-        self.gamma = best_params["gamma"]
-        self.num_probes = best_params["num_probes"]
+        self.lambda_reg = float(best_params["lambda_reg"])
+        self.gamma = float(best_params["gamma"])
+        self.num_probes = int(best_params["num_probes"])
         return self.fit(x, y)
 
     def fit_with_bo(
@@ -556,7 +575,7 @@ class LAKERRegressor:
         """
         import numpy as np
 
-        from laker.bo_utils import _GPSurrogate
+        from laker.utils import GPSurrogate
 
         x = to_tensor(x, device=self.device, dtype=self.dtype)
         y = to_tensor(y, device=self.device, dtype=self.dtype).squeeze()
@@ -573,15 +592,13 @@ class LAKERRegressor:
         val_idx = indices[:n_val]
 
         # Compute embeddings once
-        self.embeddings = self._compute_embeddings(x)
+        self.embeddings = self.compute_embeddings(x)
         train_embeddings = self.embeddings[train_idx]
 
-        bounds = np.array(
-            [lambda_reg_bounds, gamma_bounds, num_probes_bounds], dtype=np.float64
-        )
+        bounds = np.array([lambda_reg_bounds, gamma_bounds, num_probes_bounds], dtype=np.float64)
 
         # Latin-hypercube initial design
-        def _lh_sample(n_samp: int) -> np.ndarray:
+        def lh_sample(n_samp: int) -> np.ndarray:
             """Latin-hypercube sampling in [0,1]^d, then map to bounds."""
             d = bounds.shape[0]
             samples = np.zeros((n_samp, d), dtype=np.float64)
@@ -595,33 +612,38 @@ class LAKERRegressor:
         y_obs = []
 
         for _ in range(n_initial_points):
-            point = _lh_sample(1)[0]
-            lam, gam, nprobes = point[0], point[1], int(round(point[2]))
-            rmse = self._bo_eval(
-                train_embeddings, x[val_idx], y, train_idx, val_idx, lam, gam, nprobes
+            point = lh_sample(1)[0]
+            lambda_reg_value, gamma_value, num_probes_value = (
+                float(point[0]),
+                float(point[1]),
+                int(round(float(point[2]))),
+            )
+            rmse = self.bo_eval(
+                train_embeddings, x[val_idx], y, train_idx, val_idx, lambda_reg_value, gamma_value, num_probes_value
             )
             X_obs.append(point)
             y_obs.append(rmse)
 
-        gp = _GPSurrogate(bounds, log_indices=[0, 1])
+        gp = GPSurrogate(bounds, log_indices=[0, 1])
         best_rmse = min(y_obs)
+        best_arr = X_obs[numpy.argmin(y_obs)]
         best_params = {
-            "lambda_reg": X_obs[np.argmin(y_obs)][0],
-            "gamma": X_obs[np.argmin(y_obs)][1],
-            "num_probes": int(round(X_obs[np.argmin(y_obs)][2])),
+            "lambda_reg": float(best_arr[0]),
+            "gamma": float(best_arr[1]),
+            "num_probes": int(round(float(best_arr[2]))),
         }
 
         for _ in range(n_calls - n_initial_points):
             gp.fit(np.vstack(X_obs), np.array(y_obs, dtype=np.float64))
 
             # Acquisition: random search over 500 candidates
-            candidates = _lh_sample(500)
+            candidates = lh_sample(500)
             ei = gp.expected_improvement(candidates)
             next_point = candidates[np.argmax(ei)]
 
-            lam, gam, nprobes = next_point[0], next_point[1], int(round(next_point[2]))
-            rmse = self._bo_eval(
-                train_embeddings, x[val_idx], y, train_idx, val_idx, lam, gam, nprobes
+            lambda_reg_value, gamma_value, num_probes_value = next_point[0], next_point[1], int(round(next_point[2]))
+            rmse = self.bo_eval(
+                train_embeddings, x[val_idx], y, train_idx, val_idx, lambda_reg_value, gamma_value, num_probes_value
             )
             X_obs.append(next_point)
             y_obs.append(rmse)
@@ -629,9 +651,9 @@ class LAKERRegressor:
             if rmse < best_rmse:
                 best_rmse = rmse
                 best_params = {
-                    "lambda_reg": lam,
-                    "gamma": gam,
-                    "num_probes": nprobes,
+                    "lambda_reg": lambda_reg_value,
+                    "gamma": gamma_value,
+                    "num_probes": num_probes_value,
                 }
 
         if self.verbose:
@@ -642,9 +664,9 @@ class LAKERRegressor:
                 best_params["num_probes"],
             )
 
-        self.lambda_reg = best_params["lambda_reg"]
-        self.gamma = best_params["gamma"]
-        self.num_probes = best_params["num_probes"]
+        self.lambda_reg = float(best_params["lambda_reg"])
+        self.gamma = float(best_params["gamma"])
+        self.num_probes = int(best_params["num_probes"])
         return self.fit(x, y)
 
     def partial_fit(
@@ -690,8 +712,8 @@ class LAKERRegressor:
         m = x_new.shape[0]
 
         # Track total new points since last full rebuild
-        total_new = getattr(self, "_partial_fit_count", 0) + m
-        self._partial_fit_count = total_new
+        total_new = getattr(self, "partial_fit_count", 0) + m
+        self.partial_fit_count = total_new
 
         if total_new >= rebuild_threshold:
             # Full rebuild: concatenate all data and refit
@@ -706,9 +728,9 @@ class LAKERRegressor:
             )
 
         # Compute embeddings for new points
-        x_embed = x_new.to(dtype=self.embedding_dtype)
+        embedded_input = x_new.to(dtype=self.embedding_dtype)
         with torch.no_grad():
-            new_embeddings = self.embedding_model(x_embed)
+            new_embeddings = self.embedding_model(embedded_input)
         if self.embedding_dtype != self.dtype:
             new_embeddings = new_embeddings.to(dtype=self.dtype)
 
@@ -717,29 +739,33 @@ class LAKERRegressor:
         self.embeddings = torch.cat([self.embeddings, new_embeddings], dim=0)
 
         # Build enlarged kernel operator (same lambda)
-        self.kernel_operator = self._build_kernel_operator(self.embeddings)
+        self.kernel_operator = self.build_kernel_operator(self.embeddings)
 
         # For the enlarged RHS, warm-start from old alpha (scaled by forgetting factor)
         old_alpha = self.alpha * forgetting_factor
-        y_extended = torch.cat([
-            torch.zeros(old_n, device=self.device, dtype=self.dtype),
-            y_new,
-        ])
+        y_extended = torch.cat(
+            [
+                torch.zeros(old_n, device=self.device, dtype=self.dtype),
+                y_new,
+            ]
+        )
 
         # We need to solve (K_new + lambda I) alpha_new = y_extended.
         # Warm-start with [old_alpha * forgetting_factor, 0]
-        x0 = torch.cat([
-            old_alpha,
-            torch.zeros(m, device=self.device, dtype=self.dtype),
-        ])
+        x0 = torch.cat(
+            [
+                old_alpha,
+                torch.zeros(m, device=self.device, dtype=self.dtype),
+            ]
+        )
 
         # Preconditioner: rebuild for enlarged system (cheap relative to solve)
-        self.preconditioner = self._build_preconditioner(
+        self.preconditioner = self.build_preconditioner(
             self.kernel_operator.matvec,
             self.embeddings.shape[0],
         )
 
-        self.alpha, self.pcg_iterations_ = self._solve_pcg(
+        self.alpha, self.pcg_iterations_ = self.solve_pcg(
             self.kernel_operator,
             self.preconditioner,
             y_extended,
@@ -749,31 +775,33 @@ class LAKERRegressor:
         if self.verbose:
             logger.info(
                 "partial_fit: added %d points, total=%d, PCG iters=%d",
-                m, self.embeddings.shape[0], self.pcg_iterations_,
+                m,
+                self.embeddings.shape[0],
+                self.pcg_iterations_,
             )
         return self
 
-    def _bo_eval(
+    def bo_eval(
         self,
         train_embeddings: torch.Tensor,
         x_val: torch.Tensor,
         y: torch.Tensor,
         train_idx: torch.Tensor,
         val_idx: torch.Tensor,
-        lam: float,
-        gam: float,
-        nprobes: int,
+        lambda_reg_value: float,
+        gamma_value: float,
+        num_probes_value: int,
     ) -> float:
         """Single BO evaluation: fit on train, predict on val, return RMSE."""
         try:
-            kernel_op = self._build_kernel_operator(train_embeddings, lambda_reg=lam)
-            precond = self._build_preconditioner(
+            kernel_op = self.build_kernel_operator(train_embeddings, lambda_reg=lambda_reg_value)
+            precond = self.build_preconditioner(
                 kernel_op.matvec,
                 train_embeddings.shape[0],
-                gamma=gam,
-                num_probes=nprobes,
+                gamma=gamma_value,
+                num_probes=num_probes_value,
             )
-            alpha, _ = self._solve_pcg(kernel_op, precond, y[train_idx])
+            alpha, _ = self.solve_pcg(kernel_op, precond, y[train_idx])
 
             x_val_embed = x_val.to(dtype=self.embedding_dtype)
             with torch.no_grad():
@@ -822,7 +850,7 @@ class LAKERRegressor:
         if not lambda_reg_grid:
             raise ValueError("lambda_reg_grid must not be empty")
 
-        embeddings = self._compute_embeddings(x)
+        embeddings = self.compute_embeddings(x)
         n = embeddings.shape[0]
 
         # Sort descending for warm-start stability
@@ -834,20 +862,17 @@ class LAKERRegressor:
         x0 = None
         precond = None
 
-        for lam in sorted_lambdas:
-            kernel_op = self._build_kernel_operator(embeddings, lambda_reg=lam)
+        for lambda_reg_value in sorted_lambdas:
+            kernel_op = self.build_kernel_operator(embeddings, lambda_reg=lambda_reg_value)
             if precond is None or not reuse_precond:
-                precond = self._build_preconditioner(
+                precond = self.build_preconditioner(
                     kernel_op.matvec, n, gamma=self.gamma, num_probes=self.num_probes
                 )
-            alpha, iters = self._solve_pcg(
-                kernel_op, precond, y, x0=x0
-            )
+            alpha, iters = self.solve_pcg(kernel_op, precond, y, x0=x0)
             alphas.append(alpha)
             pcg_iters.append(iters)
             final_res = (
-                torch.linalg.norm(kernel_op.matvec(alpha) - y).item()
-                / torch.linalg.norm(y).item()
+                torch.linalg.norm(kernel_op.matvec(alpha) - y).item() / torch.linalg.norm(y).item()
             )
             rel_reses.append(final_res)
             x0 = alpha.clone()
@@ -924,22 +949,22 @@ class LAKERRegressor:
             optimizer.zero_grad()
 
             # Forward pass: compute embeddings with grad
-            x_embed = x.to(dtype=self.embedding_dtype)
-            embeddings = model(x_embed)
+            embedded_input = x.to(dtype=self.embedding_dtype)
+            embeddings = model(embedded_input)
             if self.embedding_dtype != self.dtype:
                 embeddings = embeddings.to(dtype=self.dtype)
 
             # Build DIFFERENTIABLE kernel operator for loss
-            kernel_op = self._build_kernel_operator(embeddings)
+            kernel_op = self.build_kernel_operator(embeddings)
 
             # Recompute alpha and preconditioner periodically using DETACHED embeddings
             if epoch % rebuild_freq == 0 or getattr(self, "alpha", None) is None:
                 with torch.no_grad():
-                    kernel_op_detached = self._build_kernel_operator(embeddings.detach())
-                    precond = self._build_preconditioner(
+                    kernel_op_detached = self.build_kernel_operator(embeddings.detach())
+                    precond = self.build_preconditioner(
                         kernel_op_detached.matvec, embeddings.shape[0]
                     )
-                    alpha = self._solve_pcg(kernel_op_detached, precond, y)[0]
+                    alpha = self.solve_pcg(kernel_op_detached, precond, y)[0]
                 self.preconditioner = precond
             else:
                 alpha = self.alpha.detach()
@@ -964,15 +989,13 @@ class LAKERRegressor:
                 patience_counter += 1
                 if patience_counter >= patience:
                     if self.verbose:
-                        logger.info(
-                            "Early stopping at epoch %d (loss=%.4e)", epoch + 1, loss_item
-                        )
+                        logger.info("Early stopping at epoch %d (loss=%.4e)", epoch + 1, loss_item)
                     break
 
         # Final fit with optimised embeddings
         self.embeddings = embeddings.detach()
         self.kernel_operator = kernel_op
-        self.alpha, self.pcg_iterations_ = self._solve_pcg(
+        self.alpha, self.pcg_iterations_ = self.solve_pcg(
             self.kernel_operator, self.preconditioner, y
         )
         return self
@@ -1009,8 +1032,8 @@ class LAKERRegressor:
                     "No embedding model available. Ensure the model was fitted with "
                     "an embedding_module or the default PositionEmbedding."
                 )
-            x_embed = x.to(dtype=self.embedding_dtype)
-            query_embeddings = self.embedding_model(x_embed)
+            embedded_input = x.to(dtype=self.embedding_dtype)
+            query_embeddings = self.embedding_model(embedded_input)
             if self.embedding_dtype != self.dtype:
                 query_embeddings = query_embeddings.to(dtype=self.dtype)
             m = query_embeddings.shape[0]
@@ -1023,7 +1046,9 @@ class LAKERRegressor:
                 chunk_size = max(1024, min(max(m, n) // 10, 8192))
 
             element_size = 4 if self.dtype == torch.float32 else 8
-            mem_per_chunk = (chunk_size or m) * n * element_size if chunk_size else m * n * element_size
+            mem_per_chunk = (
+                (chunk_size or m) * n * element_size if chunk_size else m * n * element_size
+            )
             if chunk_size is None or mem_per_chunk <= 64 * 1024 * 1024:
                 k_query = self.kernel_operator.kernel_eval(
                     query_embeddings, self.embeddings, chunk_size=chunk_size
@@ -1040,15 +1065,15 @@ class LAKERRegressor:
                 return k_query @ self.alpha
 
             out = torch.empty(m, device=self.device, dtype=self.dtype)
-            cs = chunk_size
-            for i_start in range(0, m, cs):
-                i_end = min(i_start + cs, m)
+            chunk_size_local = chunk_size
+            for i_start in range(0, m, chunk_size_local):
+                i_end = min(i_start + chunk_size_local, m)
                 accum = torch.zeros(i_end - i_start, device=self.device, dtype=self.dtype)
                 e_i = query_embeddings[i_start:i_end]
-                for j_start in range(0, n, cs):
-                    j_end = min(j_start + cs, n)
+                for j_start in range(0, n, chunk_size_local):
+                    j_end = min(j_start + chunk_size_local, n)
                     gram_block = e_i @ self.embeddings[j_start:j_end].T
-                    _exp_safe(gram_block, out=gram_block)
+                    exp_safe(gram_block, out=gram_block)
                     accum.addmv_(gram_block, self.alpha[j_start:j_end])
                 out[i_start:i_end] = accum
             return out
@@ -1086,8 +1111,8 @@ class LAKERRegressor:
                     "No embedding model available. Ensure the model was fitted with "
                     "an embedding_module or the default PositionEmbedding."
                 )
-            x_embed = x.to(dtype=self.embedding_dtype)
-            query_embeddings = self.embedding_model(x_embed)
+            embedded_input = x.to(dtype=self.embedding_dtype)
+            query_embeddings = self.embedding_model(embedded_input)
             if self.embedding_dtype != self.dtype:
                 query_embeddings = query_embeddings.to(dtype=self.dtype)
             m = query_embeddings.shape[0]
@@ -1095,18 +1120,20 @@ class LAKERRegressor:
 
             # RFF: closed-form via Woodbury (fast path)
             if self.kernel_approx == "rff" and hasattr(self.kernel_operator, "phi"):
-                ko = self.kernel_operator
+                ko = cast(RandomFeatureAttentionKernelOperator, self.kernel_operator)
                 proj = query_embeddings @ ko.freq
                 phi_q = torch.cat(
                     [torch.cos(proj + ko.phase), torch.sin(proj + ko.phase)], dim=1
-                ) / (ko.num_features ** 0.5)
+                ) / (ko.num_features**0.5)
                 a = ko.phi.T @ ko.phi  # (2r, 2r)
                 a_reg = a + self.lambda_reg * torch.eye(
                     a.shape[0], device=self.device, dtype=self.dtype
                 )
                 # Cholesky solve for stability
                 chol = torch.linalg.cholesky(a_reg)
-                m_solve = torch.cholesky_solve(torch.eye(a.shape[0], device=self.device, dtype=self.dtype), chol)
+                m_solve = torch.cholesky_solve(
+                    torch.eye(a.shape[0], device=self.device, dtype=self.dtype), chol
+                )
                 var = self.lambda_reg * torch.sum(phi_q @ m_solve * phi_q, dim=1)
                 return var.clamp(min=0.0)
 
@@ -1136,9 +1163,7 @@ class LAKERRegressor:
                     preconditioner=self.preconditioner.apply,
                     rhs=k_train_query,
                 )  # (n, m)
-                k_diag_mat = self.kernel_operator.kernel_eval(
-                    query_embeddings, query_embeddings
-                )
+                k_diag_mat = self.kernel_operator.kernel_eval(query_embeddings, query_embeddings)
                 if k_diag_mat.is_sparse:
                     k_diag_mat = k_diag_mat.to_dense()
                 k_diag = k_diag_mat.diagonal()
@@ -1157,15 +1182,11 @@ class LAKERRegressor:
                         preconditioner=self.preconditioner.apply,
                         rhs=k_train_chunk,
                     )  # (n, end-start)
-                    k_diag_mat = self.kernel_operator.kernel_eval(
-                        q_chunk, q_chunk
-                    )
+                    k_diag_mat = self.kernel_operator.kernel_eval(q_chunk, q_chunk)
                     if k_diag_mat.is_sparse:
                         k_diag_mat = k_diag_mat.to_dense()
                     k_diag_chunk = k_diag_mat.diagonal()
-                    var[start:end] = k_diag_chunk - torch.sum(
-                        k_train_chunk * v_chunk, dim=0
-                    )
+                    var[start:end] = k_diag_chunk - torch.sum(k_train_chunk * v_chunk, dim=0)
 
             return var.clamp(min=0.0)
 
@@ -1264,7 +1285,9 @@ class LAKERRegressor:
             "kernel_approx": self.kernel_approx,
             "num_landmarks": self.num_landmarks,
             "num_features": self.num_features,
-            "embedding_dtype": str(self.embedding_dtype).replace("torch.", "") if self.embedding_dtype else None,
+            "embedding_dtype": (
+                str(self.embedding_dtype).replace("torch.", "") if self.embedding_dtype else None
+            ),
             "device": str(self.device),
             "dtype": str(self.dtype).replace("torch.", ""),
             "verbose": self.verbose,
@@ -1348,9 +1371,13 @@ class LAKERRegressor:
         state = torch.load(path, weights_only=False)
         dtype = torch.float32 if "float32" in state["dtype"] else torch.float64
         embedding_dtype = (
-            torch.float32 if state.get("embedding_dtype") and "float32" in state["embedding_dtype"]
-            else torch.float64 if state.get("embedding_dtype") and "float64" in state["embedding_dtype"]
-            else None
+            torch.float32
+            if state.get("embedding_dtype") and "float32" in state["embedding_dtype"]
+            else (
+                torch.float64
+                if state.get("embedding_dtype") and "float64" in state["embedding_dtype"]
+                else None
+            )
         )
         model = cls(
             embedding_dim=state["embedding_dim"],
@@ -1378,27 +1405,28 @@ class LAKERRegressor:
         model.embeddings = state["embeddings"].to(model.device)
         model.alpha = state["alpha"].to(model.device)
         if "embedding_model_state" in state:
-            klass_name = state["embedding_model_class"]
+            class_name = state["embedding_model_class"]
             module_name = state.get("embedding_model_module", "laker.embeddings")
             try:
                 import importlib
 
-                mod = importlib.import_module(module_name)
-                klass = getattr(mod, klass_name)
+                module = importlib.import_module(module_name)
+                cls = getattr(module, class_name)
             except (ImportError, AttributeError):
                 logger.warning(
                     "Could not import %s.%s for loading; falling back to PositionEmbedding. "
                     "Save/load of custom embedding modules requires the module to be importable.",
                     module_name,
-                    klass_name,
+                    class_name,
                 )
-                from laker.embeddings import PositionEmbedding as klass
-                klass_name = "PositionEmbedding"
+                from laker.embeddings import PositionEmbedding as cls
+
+                class_name = "PositionEmbedding"
 
             input_dim = state.get("input_dim", 2)
             embed_dtype = embedding_dtype if embedding_dtype else dtype
-            if klass_name == "PositionEmbedding":
-                model.embedding_model = klass(
+            if class_name == "PositionEmbedding":
+                model.embedding_model = cls(
                     input_dim=input_dim,
                     embedding_dim=model.embedding_dim,
                     device=model.device,
@@ -1406,14 +1434,14 @@ class LAKERRegressor:
                 )
             else:
                 try:
-                    model.embedding_model = klass(
+                    model.embedding_model = cls(
                         input_dim=input_dim,
                         embedding_dim=model.embedding_dim,
                         device=model.device,
                         dtype=embed_dtype,
                     )
                 except TypeError:
-                    model.embedding_model = klass()
+                    model.embedding_model = cls()
                     model.embedding_model.to(device=model.device, dtype=embed_dtype)
             model.embedding_model.load_state_dict(state["embedding_model_state"])
 

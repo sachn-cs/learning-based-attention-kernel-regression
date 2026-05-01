@@ -68,7 +68,11 @@ def maybe_compile(func, mode: str = "reduce-overhead"):
         Compiled function or the original function.
     """
     if hasattr(torch, "compile"):
-        return torch.compile(func, mode=mode)
+        import warnings
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", DeprecationWarning)
+            return torch.compile(func, mode=mode)
     return func
 
 
@@ -97,11 +101,11 @@ def to_tensor(
 
 
 # Initialise from environment on import
-_env_device = os.environ.get("LAKER_DEVICE")
-if _env_device:
-    set_default_device(_env_device)
-_env_dtype = os.environ.get("LAKER_DTYPE")
-if _env_dtype == "float32":
+env_device = os.environ.get("LAKER_DEVICE")
+if env_device:
+    set_default_device(env_device)
+env_dtype = os.environ.get("LAKER_DTYPE")
+if env_dtype == "float32":
     set_default_dtype(torch.float32)
-elif _env_dtype == "float64":
+elif env_dtype == "float64":
     set_default_dtype(torch.float64)

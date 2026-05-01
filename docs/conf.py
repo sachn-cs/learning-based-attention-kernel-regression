@@ -8,7 +8,7 @@ sys.path.insert(0, os.path.abspath(".."))
 project = "LAKER"
 copyright = "2026, LAKER Contributors"
 author = "LAKER Contributors"
-release = "0.1.0"
+release = "0.3.0"
 
 extensions = [
     "sphinx.ext.autodoc",
@@ -16,8 +16,15 @@ extensions = [
     "sphinx.ext.viewcode",
     "sphinx.ext.mathjax",
     "sphinx.ext.intersphinx",
+    "myst_parser",
 ]
 
+source_suffix = {
+    ".rst": "restructuredtext",
+    ".md": "markdown",
+}
+
+master_doc = "index"
 templates_path = ["_templates"]
 exclude_patterns = ["_build", "Thumbs.db", ".DS_Store"]
 
@@ -34,3 +41,8 @@ intersphinx_mapping = {
     "torch": ("https://pytorch.org/docs/stable/", None),
     "numpy": ("https://numpy.org/doc/stable/", None),
 }
+
+myst_enable_extensions = [
+    "dollarmath",
+    "amsmath",
+]

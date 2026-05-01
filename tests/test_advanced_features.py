@@ -124,7 +124,7 @@ def test_invalid_kernel_approx():
     """Invalid kernel_approx should raise ValueError."""
     with torch.no_grad():
         try:
-            model = LAKERRegressor(kernel_approx="invalid")
+            LAKERRegressor(kernel_approx="invalid")
             assert False, "Expected ValueError"
         except ValueError:
             pass
@@ -149,9 +149,7 @@ def test_fit_path():
         dtype=torch.float64,
         verbose=False,
     )
-    path = model.fit_path(
-        x, y, lambda_reg_grid=[1e-1, 1e-2, 1e-3]
-    )
+    path = model.fit_path(x, y, lambda_reg_grid=[1e-1, 1e-2, 1e-3])
 
     assert len(path["lambda_reg"]) == 3
     assert len(path["alphas"]) == 3
@@ -248,8 +246,10 @@ def test_knn_integration():
 
 def test_knn_matvec_consistency():
     """Sparse k-NN matvec should match dense for small k."""
-    from laker.sparse_kernels import SparseKNNAttentionKernelOperator
-    from laker.kernels import AttentionKernelOperator
+    from laker.kernels import (
+        AttentionKernelOperator,
+        SparseKNNAttentionKernelOperator,
+    )
 
     torch.manual_seed(42)
     n = 50
@@ -257,7 +257,9 @@ def test_knn_matvec_consistency():
     x = torch.randn(n, dtype=torch.float64)
 
     dense_op = AttentionKernelOperator(e, lambda_reg=1e-2, dtype=torch.float64)
-    sparse_op = SparseKNNAttentionKernelOperator(e, lambda_reg=1e-2, k_neighbors=n, dtype=torch.float64)
+    sparse_op = SparseKNNAttentionKernelOperator(
+        e, lambda_reg=1e-2, k_neighbors=n, dtype=torch.float64
+    )
 
     y_dense = dense_op.matvec(x)
     y_sparse = sparse_op.matvec(x)
@@ -341,16 +343,10 @@ def test_learned_embeddings():
         verbose=False,
     )
     model.fit(x, y)
-    initial_res = torch.linalg.norm(
-        model.kernel_operator.matvec(model.alpha) - y
-    ).item()
+    initial_res = torch.linalg.norm(model.kernel_operator.matvec(model.alpha) - y).item()
 
-    model.fit_learned_embeddings(
-        x, y, lr=1e-2, epochs=20, rebuild_freq=5, patience=10
-    )
-    final_res = torch.linalg.norm(
-        model.kernel_operator.matvec(model.alpha) - y
-    ).item()
+    model.fit_learned_embeddings(x, y, lr=1e-2, epochs=20, rebuild_freq=5, patience=10)
+    final_res = torch.linalg.norm(model.kernel_operator.matvec(model.alpha) - y).item()
     assert final_res <= initial_res
 
 
@@ -364,7 +360,7 @@ def test_distributed_fallback():
     x = torch.randn(n, dtype=torch.float64)
 
     dist_op = DistributedAttentionKernelOperator(e, lambda_reg=1e-2, dtype=torch.float64)
-    assert dist_op._single_device
+    assert dist_op.single_device
 
     y_dist = dist_op.matvec(x)
     y_diag = dist_op.diagonal()

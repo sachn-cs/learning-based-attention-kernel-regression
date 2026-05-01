@@ -8,6 +8,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Changed
+- **Code standardization**: Removed all semi-private naming (leading underscores) from functions, methods, classes, and variables. Replaced terse abbreviations (`cs`, `lam`, `pre`, `vt`, etc.) with descriptive PEP 8 identifiers. Replaced all `print()` calls with `logging` module usage, including in documentation code blocks.
+- **Architecture**: Introduced `Executor` abstract base class in `laker/executor.py`. Standardized the "Class + Convenience Wrapper" pattern across examples and benchmarks. All public workflows now have class implementations with optional executor injection; free-function wrappers are thin one-line conveniences only.
+- **File reorganization**: Consolidated `laker/low_rank_kernels.py`, `laker/ski_kernels.py`, and `laker/sparse_kernels.py` into `laker/kernels.py`. Renamed benchmark and example scripts to module-runnable names (`benchmarks/reproducible.py`, `benchmarks/baseline.py`, `benchmarks/approximations.py`, `benchmarks/run.py`, `examples/basic.py`, `examples/large.py`).
+- **Benchmark API**: Converted `benchmark_solver` and `benchmark_laker_vs_baselines` free functions to `SolverBenchmark` and `BaselineBenchmark` classes in `laker/benchmark.py`. Original function names preserved as thin convenience wrappers.
+
+### Fixed
+- **Broken imports**: Fixed benchmark and example imports referencing deleted modules (`laker.low_rank_kernels`, `laker.ski_kernels`, `laker.sparse_kernels`).
+- **Dead code**: Removed unused `self.lambda_vec = None` in `AttentionKernelOperator` and unused local `kernel_mv` in `laker/benchmark.py`.
+
+### Added
+- **Documentation**: Added `docs/patterns.md` documenting the Executor pattern, Class + Convenience Wrapper convention, naming rules, and logging requirements.
+- **Module structure**: Added `benchmarks/__init__.py` and `examples/__init__.py` so benchmarks and examples can be run as modules (`python -m benchmarks.reproducible`, etc.).
+
+## [0.3.0] - 2026-04-30
+
+### Changed
 - **Math simplification**: Removed redundant `inv_isotropic_coef` and `r_column_norms_sq` terms from CCCP probe denominator because QR-normalised probes have unit column norms. This eliminates numerical drift and an unnecessary buffer.
 - **Memory efficiency**: Replaced explicit `factored_inverse = V @ diag(1/eig) @ V.T` with basis-scaled matmul (`vtr.T @ scaled_vtr`) in CCCP, avoiding an `O(N_r^3)` allocation per iteration.
 - **Adaptive chunking**: `AttentionKernelOperator.matvec` now auto-selects between fast 1-D chunking and full 2-D tiling based on a 64 MB memory heuristic, bounding peak memory to `O(chunk_size^2)` instead of `O(chunk_size * n)`.
@@ -64,5 +80,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Comprehensive test suite with 14+ tests.
 - Documentation and usage examples.
 
-[Unreleased]: https://github.com/convexsoft/kernelSC/compare/v0.0.1...HEAD
-[0.0.1]: https://github.com/convexsoft/kernelSC/releases/tag/v0.0.1
+[Unreleased]: https://github.com/sachn-cs/laker/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/sachn-cs/laker/compare/v0.0.1...v0.3.0
+[0.0.1]: https://github.com/sachn-cs/laker/releases/tag/v0.0.1

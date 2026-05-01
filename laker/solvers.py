@@ -83,16 +83,16 @@ class PreconditionedConjugateGradient:
 
         z = preconditioner(r)
         p = z.clone()
-        b_norm = torch.linalg.norm(rhs)
-        if b_norm == 0:
+        rhs_norm = torch.linalg.norm(rhs)
+        if rhs_norm == 0:
             return x
 
         if rhs.dim() == 1:
-            return self._solve_1d(operator, preconditioner, rhs, x, r, z, p, b_norm, max_iter)
+            return self.solve_1d(operator, preconditioner, rhs, x, r, z, p, rhs_norm, max_iter)
         else:
-            return self._solve_2d(operator, preconditioner, rhs, x, r, z, p, b_norm, max_iter)
+            return self.solve_2d(operator, preconditioner, rhs, x, r, z, p, rhs_norm, max_iter)
 
-    def _solve_1d(
+    def solve_1d(
         self,
         operator: Callable[[torch.Tensor], torch.Tensor],
         preconditioner: Callable[[torch.Tensor], torch.Tensor],
@@ -101,51 +101,55 @@ class PreconditionedConjugateGradient:
         r: torch.Tensor,
         z: torch.Tensor,
         p: torch.Tensor,
-        b_norm: float,
+        rhs_norm: float,
         max_iter: int,
     ) -> torch.Tensor:
         """1-D (single RHS) PCG using scalar dot products for speed."""
-        rz_old = torch.dot(r, z).item()
+        residual_z_old = torch.dot(r, z).item()
         for iteration in range(max_iter):
-            ap = operator(p)
-            p_ap = torch.dot(p, ap).item()
-            eps = self.breakdown_eps if self.breakdown_eps is not None else torch.finfo(p.dtype).eps ** 0.5
-            if p_ap <= -eps * torch.linalg.norm(p).item() * torch.linalg.norm(ap).item():
+            matrix_vector_product = operator(p)
+            p_dot_ap = torch.dot(p, matrix_vector_product).item()
+            eps = (
+                self.breakdown_eps
+                if self.breakdown_eps is not None
+                else torch.finfo(p.dtype).eps ** 0.5
+            )
+            if p_dot_ap <= -eps * torch.linalg.norm(p).item() * torch.linalg.norm(matrix_vector_product).item():
                 raise RuntimeError(
                     "PCG breakdown: non-positive curvature detected (p^T A p <= 0). "
                     "The operator may be indefinite or the preconditioner may be unsuitable."
                 )
 
-            alpha = rz_old / p_ap
+            alpha = residual_z_old / p_dot_ap
             x.add_(p, alpha=alpha)
-            r.add_(ap, alpha=-alpha)
+            r.add_(matrix_vector_product, alpha=-alpha)
 
             if self.restart_freq is not None and (iteration + 1) % self.restart_freq == 0:
                 r = rhs - operator(x)
 
             self.residual_norm = torch.linalg.norm(r).item()
-            rel_res = self.residual_norm / b_norm
+            relative_residual = self.residual_norm / rhs_norm
 
-            if rel_res <= self.tol:
+            if relative_residual <= self.tol:
                 self.iterations = iteration + 1
                 if self.verbose:
                     logger.info(
-                        "PCG converged in %d iterations, rel_res=%.3e", self.iterations, rel_res
+                        "PCG converged in %d iterations, rel_res=%.3e", self.iterations, relative_residual
                     )
                 return x
 
             z = preconditioner(r)
-            rz_new = torch.dot(r, z).item()
-            beta = rz_new / rz_old
+            residual_z_new = torch.dot(r, z).item()
+            beta = residual_z_new / residual_z_old
             p.mul_(beta).add_(z)
-            rz_old = rz_new
+            residual_z_old = residual_z_new
 
         self.iterations = max_iter
         if self.verbose:
-            logger.warning("PCG did not converge in %d iterations, rel_res=%.3e", max_iter, rel_res)
+            logger.warning("PCG did not converge in %d iterations, rel_res=%.3e", max_iter, relative_residual)
         return x
 
-    def _solve_2d(
+    def solve_2d(
         self,
         operator: Callable[[torch.Tensor], torch.Tensor],
         preconditioner: Callable[[torch.Tensor], torch.Tensor],
@@ -154,48 +158,52 @@ class PreconditionedConjugateGradient:
         r: torch.Tensor,
         z: torch.Tensor,
         p: torch.Tensor,
-        b_norm: float,
+        rhs_norm: float,
         max_iter: int,
     ) -> torch.Tensor:
         """2-D (batch RHS) PCG using vectorised column-wise dot products."""
-        rz_old = torch.sum(r * z, dim=0)
+        residual_z_old = torch.sum(r * z, dim=0)
         for iteration in range(max_iter):
-            ap = operator(p)
-            p_ap = torch.sum(p * ap, dim=0)
-            eps = self.breakdown_eps if self.breakdown_eps is not None else torch.finfo(p.dtype).eps ** 0.5
-            if torch.any(p_ap <= -eps * torch.linalg.norm(p, dim=0) * torch.linalg.norm(ap, dim=0)):
+            matrix_vector_product = operator(p)
+            p_dot_ap = torch.sum(p * matrix_vector_product, dim=0)
+            eps = (
+                self.breakdown_eps
+                if self.breakdown_eps is not None
+                else torch.finfo(p.dtype).eps ** 0.5
+            )
+            if torch.any(p_dot_ap <= -eps * torch.linalg.norm(p, dim=0) * torch.linalg.norm(matrix_vector_product, dim=0)):
                 raise RuntimeError(
                     "PCG breakdown: non-positive curvature detected (p^T A p <= 0). "
                     "The operator may be indefinite or the preconditioner may be unsuitable."
                 )
 
-            alpha = rz_old / p_ap
+            alpha = residual_z_old / p_dot_ap
             x.add_(p * alpha.unsqueeze(0))
-            r.add_(ap * (-alpha.unsqueeze(0)))
+            r.add_(matrix_vector_product * (-alpha.unsqueeze(0)))
 
             if self.restart_freq is not None and (iteration + 1) % self.restart_freq == 0:
                 r = rhs - operator(x)
 
             self.residual_norm = torch.linalg.norm(r).item()
-            rel_res = self.residual_norm / b_norm
+            relative_residual = self.residual_norm / rhs_norm
 
-            if rel_res <= self.tol:
+            if relative_residual <= self.tol:
                 self.iterations = iteration + 1
                 if self.verbose:
                     logger.info(
-                        "PCG converged in %d iterations, rel_res=%.3e", self.iterations, rel_res
+                        "PCG converged in %d iterations, rel_res=%.3e", self.iterations, relative_residual
                     )
                 return x
 
             z = preconditioner(r)
-            rz_new = torch.sum(r * z, dim=0)
-            beta = rz_new / rz_old
+            residual_z_new = torch.sum(r * z, dim=0)
+            beta = residual_z_new / residual_z_old
             p.mul_(beta.unsqueeze(0)).add_(z)
-            rz_old = rz_new
+            residual_z_old = residual_z_new
 
         self.iterations = max_iter
         if self.verbose:
-            logger.warning("PCG did not converge in %d iterations, rel_res=%.3e", max_iter, rel_res)
+            logger.warning("PCG did not converge in %d iterations, rel_res=%.3e", max_iter, relative_residual)
         return x
 
 

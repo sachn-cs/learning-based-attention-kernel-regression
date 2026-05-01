@@ -1,8 +1,105 @@
 """Synthetic data generation for spectrum cartography experiments."""
 
+import logging
 from typing import Optional, Tuple
 
 import torch
+
+logger = logging.getLogger(__name__)
+
+
+class RadioFieldGenerator:
+    """Generator for synthetic radio propagation fields.
+
+    Produces received signal strength (RSS) maps from multiple transmitters
+    using log-distance path loss with optional log-normal shadowing.
+    """
+
+    def __init__(
+        self,
+        path_loss_exponent: float = 2.0,
+        reference_distance: float = 1.0,
+        shadow_sigma: float = 1.5,
+    ):
+        self.path_loss_exponent = float(path_loss_exponent)
+        self.reference_distance = float(reference_distance)
+        self.shadow_sigma = float(shadow_sigma)
+
+    def generate(
+        self,
+        locations: torch.Tensor,
+        transmitters: torch.Tensor,
+        powers: torch.Tensor,
+        seed: Optional[int] = None,
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        """Generate a synthetic radio field from multiple transmitters.
+
+        The received signal strength at each location is computed as a
+        superposition of log-distance path loss terms plus log-normal
+        shadowing:
+
+        .. math::
+            r(x) = \\sum_j \\left( P_j - 10 \\eta \\log_{10} \\frac{d_j}{d_0} \\right) + \\epsilon
+
+        where :math:`d_j = \\|x - \\text{tx}_j\\|_2` and
+        :math:`\\epsilon \\sim \\mathcal{N}(0, \\sigma_\\epsilon^2)`.
+
+        Args:
+            locations: Sensor locations of shape ``(n, dx)``.
+            transmitters: Transmitter coordinates of shape ``(num_tx, dx)``.
+            powers: Transmitter power levels in dBm of shape ``(num_tx,)``.
+            seed: Optional random seed for reproducible noise.
+
+        Returns:
+            Tuple ``(rss_clean, rss_noisy)`` where each is a tensor of shape ``(n,)``.
+
+        Raises:
+            ValueError: If input shapes are inconsistent.
+        """
+        if locations.dim() != 2:
+            raise ValueError(f"locations must be 2-D, got shape {locations.shape}")
+        if transmitters.dim() != 2:
+            raise ValueError(f"transmitters must be 2-D, got shape {transmitters.shape}")
+        if powers.dim() != 1:
+            raise ValueError(f"powers must be 1-D, got shape {powers.shape}")
+        if transmitters.shape[0] != powers.shape[0]:
+            raise ValueError(
+                "transmitters and powers must have same length, "
+                f"got {transmitters.shape[0]} and {powers.shape[0]}"
+            )
+        if locations.shape[1] != transmitters.shape[1]:
+            raise ValueError(
+                "locations and transmitters must have same spatial dimension, "
+                f"got {locations.shape[1]} and {transmitters.shape[1]}"
+            )
+
+        if seed is not None:
+            gen = torch.Generator(device=locations.device)
+            gen.manual_seed(seed)
+        else:
+            gen = None
+
+        n = locations.shape[0]
+        rss_clean = torch.zeros(n, device=locations.device, dtype=locations.dtype)
+
+        for transmitter_location, transmitter_power in zip(transmitters, powers):
+            distances = torch.norm(locations - transmitter_location, dim=1)
+            distances = distances.clamp(min=self.reference_distance)
+            path_loss = (
+                10.0 * self.path_loss_exponent * torch.log10(distances / self.reference_distance)
+            )
+            rss_clean += transmitter_power - path_loss
+
+        noise = torch.randn(n, device=locations.device, dtype=locations.dtype, generator=gen)
+        rss_noisy = rss_clean + self.shadow_sigma * noise
+        logger.info(
+            "Generated radio field: n=%d, tx=%d, path_loss_exp=%.1f, shadow_sigma=%.2f",
+            n,
+            transmitters.shape[0],
+            self.path_loss_exponent,
+            self.shadow_sigma,
+        )
+        return rss_clean, rss_noisy
 
 
 def generate_radio_field(
@@ -16,15 +113,7 @@ def generate_radio_field(
 ) -> Tuple[torch.Tensor, torch.Tensor]:
     """Generate a synthetic radio field from multiple transmitters.
 
-    The received signal strength at each location is computed as a
-    superposition of log-distance path loss terms plus log-normal
-    shadowing:
-
-    .. math::
-        r(x) = \\sum_j \\left( P_j - 10 \\eta \\log_{10} \\frac{d_j}{d_0} \\right) + \\epsilon
-
-    where :math:`d_j = \\|x - \\text{tx}_j\\|_2` and
-    :math:`\\epsilon \\sim \\mathcal{N}(0, \\sigma_\\epsilon^2)`.
+    Convenience wrapper around ``RadioFieldGenerator.generate()``.
 
     Args:
         locations: Sensor locations of shape ``(n, dx)``.
@@ -37,31 +126,13 @@ def generate_radio_field(
 
     Returns:
         Tuple ``(rss_clean, rss_noisy)`` where each is a tensor of shape ``(n,)``.
-
-    Example:
-        >>> locs = torch.rand(100, 2) * 100.0
-        >>> tx = torch.tensor([[30.0, 70.0], [70.0, 30.0]])
-        >>> pwr = torch.tensor([-40.0, -45.0])
-        >>> clean, noisy = generate_radio_field(locs, tx, pwr)
     """
-    if seed is not None:
-        gen = torch.Generator(device=locations.device)
-        gen.manual_seed(seed)
-    else:
-        gen = None
-
-    n = locations.shape[0]
-    rss_clean = torch.zeros(n, device=locations.device, dtype=locations.dtype)
-
-    for tx_loc, tx_pwr in zip(transmitters, powers):
-        distances = torch.norm(locations - tx_loc, dim=1)
-        distances = distances.clamp(min=reference_distance)
-        path_loss = 10.0 * path_loss_exponent * torch.log10(distances / reference_distance)
-        rss_clean += tx_pwr - path_loss
-
-    noise = torch.randn(n, device=locations.device, dtype=locations.dtype, generator=gen)
-    rss_noisy = rss_clean + shadow_sigma * noise
-    return rss_clean, rss_noisy
+    generator = RadioFieldGenerator(
+        path_loss_exponent=path_loss_exponent,
+        reference_distance=reference_distance,
+        shadow_sigma=shadow_sigma,
+    )
+    return generator.generate(locations, transmitters, powers, seed=seed)
 
 
 def generate_grid(
