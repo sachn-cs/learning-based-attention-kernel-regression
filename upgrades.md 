@@ -1,0 +1,85 @@
+## 1) Learn the Kernel, Not Just Embeddings
+
+  Use:
+  [
+  K_{ij}=\exp!\left(\phi(e_i,e_j)\right), \quad \phi(e_i,e_j)=e_i^\top W e_j + b^\top|e_i-e_j| + c
+  ]
+  with PSD-constrained W = L L^T.
+  Why better: adds anisotropy + distance-aware structure while preserving kernel smoothness.
+
+  ## 2) Spectral-Shaped Attention Kernel
+
+  Replace plain exp(EE^T) with:
+  [
+  K = U,\exp(g(\Lambda)),U^\top
+  ]
+  where EE^T = UΛU^T, and g is a learned monotone spline.
+  Why better: directly controls spectrum (conditioning + inductive bias), often improving both fit and solver behavior.
+
+  ## 3) Two-Scale Operator (Global + Local Physics)
+
+  [
+  K = \alpha K_{\text{global-low-rank}} + (1-\alpha)K_{\text{local-graph}}
+  ]
+  where local graph is adaptive kNN in embedding space with learned edge gates.
+  Why better: global coherence + local sharpness; classic way to reduce oversmoothing.
+
+  ## 4) Bilevel Hyperparameter Learning via Implicit Differentiation
+
+  Instead of grid/BO outer loop, compute hypergradients of validation loss through the linear solve:
+  [
+  \nabla_\theta \mathcal{L}_{val}( \alpha^*(\theta) )
+  ]
+  using implicit Jacobian-vector products.
+  Why better: far more sample-efficient than black-box search; learns lambda, gamma, temperature, etc. jointly.
+
+  ## 5) Nyström Landmarks via Leverage Scores (Not k-means++ only)
+
+  Approximate statistical leverage scores from a pilot kernel and sample landmarks proportionally.
+  Why better: lower approximation error at fixed landmark budget; usually stronger than geometric heuristics.
+
+  ## 6) Learned Preconditioner Family Selection
+
+  Train a lightweight policy to choose among {CCCP, deflation, block-Jacobi, hybrid} from cheap diagnostics (estimated condition number, spectrum sketch, sparsity).
+  Why better: preconditioner mismatch is often the hidden bottleneck; adaptive choice reduces both error and runtime.
+
+  ## 7) Continuation on Regularization + Temperature
+
+  Solve sequence:
+  [
+  (\lambda_t I + K_{\tau_t})\alpha_t = y,\quad \lambda_{t+1}<\lambda_t,\ \tau_{t+1}<\tau_t
+  ]
+  warm-starting PCG and preconditioner each stage.
+  Why better: tracks a stable path to sharper solutions and avoids poor local regimes.
+
+  ## 8) Uncertainty-Aware Training Objective
+
+  Train embeddings/kernel with:
+  [
+  \mathcal{L}=\text{NLL}(y|\mu,\sigma^2)+\beta\cdot\text{calibration penalty}
+  ]
+  using your predict_variance path.
+  Why better: prevents overconfident bad fits and improves active sensing decisions.
+
+  ## 9) Residual Corrector on Top of Kernel Solve
+
+  After LAKER prediction, learn a small residual model on structured errors:
+  [
+  \hat y = \hat y_{LAKER} + r_\psi(x)
+  ]
+  where r_ψ is tiny and regularized.
+  Why better: captures misspecification without destabilizing the core solver.
+
+  ## 10) Adaptive Probe Distribution for CCCP
+
+  Current probes are Gaussian iid. Upgrade to spectrum-aware probes (power-iteration-biased + orthogonalized blocks).
+  Why better: better subspace capture with same probe count; stronger preconditioner quality.
+
+  ———
+
+  ### Highest expected payoff (start here)
+
+  1. Two-scale kernel (global+local)
+  2. Bilevel implicit hypergradient learning
+  3. Leverage-score Nyström + continuation schedule
+  4. Adaptive preconditioner selection

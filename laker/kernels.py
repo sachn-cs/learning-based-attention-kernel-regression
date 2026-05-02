@@ -5,11 +5,36 @@ Includes exact, low-rank (Nyström, RFF), sparse k-NN, and SKI approximations.
 
 import logging
 import math
-from typing import Optional
+from typing import Optional, Protocol, Tuple
 
 import torch
 
 logger = logging.getLogger(__name__)
+
+
+class KernelOperator(Protocol):
+    """Protocol for matrix-free kernel operators."""
+
+    n: int
+    embedding_dim: int
+    lambda_reg: float
+    dtype: torch.dtype
+    device: torch.device
+    shape: Tuple[int, int]
+
+    def matvec(self, x: torch.Tensor) -> torch.Tensor:
+        ...
+
+    def diagonal(self) -> torch.Tensor:
+        ...
+
+    def to_dense(self) -> torch.Tensor:
+        ...
+
+    def kernel_eval(
+        self, x: torch.Tensor, y: Optional[torch.Tensor] = None, **kwargs
+    ) -> torch.Tensor:
+        ...
 
 
 # ---------------------------------------------------------------------------
@@ -40,8 +65,8 @@ def exp_safe(
         if gram.requires_grad:
             return torch.exp(gram.clamp(max=max_val))
         if out is None:
-            out = gram
-        if out is not gram:
+            out = gram.clone()
+        elif out is not gram:
             out.copy_(gram)
         out.clamp_(max=max_val)
         return torch.exp(out)
@@ -205,28 +230,6 @@ class AttentionKernelOperator:
                 out[i_start:i_end].add_(accum)
         return out
 
-    def matvec_1d(self, x: torch.Tensor) -> torch.Tensor:
-        """Apply ``(lambda I + G)`` to a single vector.
-
-        Args:
-            x: Tensor of shape ``(n,)``.
-
-        Returns:
-            Tensor of shape ``(n,)``.
-        """
-        return self.matvec_impl(x)
-
-    def matvec_2d(self, x: torch.Tensor) -> torch.Tensor:
-        """Apply ``(lambda I + G)`` to a batch of vectors.
-
-        Args:
-            x: Tensor of shape ``(n, k)``.
-
-        Returns:
-            Tensor of shape ``(n, k)``.
-        """
-        return self.matvec_impl(x)
-
     def diagonal(self) -> torch.Tensor:
         """Return the diagonal of ``lambda I + G``.
 
@@ -344,6 +347,8 @@ class NystromAttentionKernelOperator:
         embeddings: torch.Tensor,
         lambda_reg: float = 1e-2,
         num_landmarks: Optional[int] = None,
+        landmark_method: str = "greedy",
+        landmark_pilot_size: int = 1000,
         chunk_size: Optional[int] = None,
         device: Optional[torch.device] = None,
         dtype: Optional[torch.dtype] = None,
@@ -354,6 +359,8 @@ class NystromAttentionKernelOperator:
         self.embedding_dim = embeddings.shape[1]
         self.lambda_reg = float(lambda_reg)
         self.chunk_size = chunk_size
+        self.landmark_method = landmark_method
+        self.landmark_pilot_size = landmark_pilot_size
 
         if device is None:
             device = embeddings.device
@@ -370,7 +377,6 @@ class NystromAttentionKernelOperator:
         # Landmark norms bounded by training embedding norms — skip clamp.
         self.skip_clamp = True
 
-        # Sample landmarks via k-means++ style greedy selection
         self.landmark_indices = self.select_landmarks()
         self.landmark_embeddings = self.embeddings[self.landmark_indices]
 
@@ -392,20 +398,53 @@ class NystromAttentionKernelOperator:
         self.shape = (self.n, self.n)
 
     def select_landmarks(self) -> torch.Tensor:
+        """Select landmark indices.
+
+        Supports ``"greedy"`` (k-means++ style farthest-first) and
+        ``"leverage"`` (ridge leverage score sampling from a pilot kernel).
+        """
+        if self.landmark_method == "greedy":
+            return self._select_landmarks_greedy()
+        if self.landmark_method == "leverage":
+            return self._select_landmarks_leverage()
+        raise ValueError(f"Unknown landmark_method={self.landmark_method}")
+
+    def _select_landmarks_greedy(self) -> torch.Tensor:
         """Greedy landmark selection (k-means++ style)."""
         indices = torch.zeros(self.m, dtype=torch.long, device=self.device)
-        # First landmark: random
         indices[0] = torch.randint(0, self.n, (1,), device=self.device)
 
         for i in range(1, self.m):
-            # Compute squared distances to nearest landmark
             selected = self.embeddings[indices[:i]]
             dists = torch.cdist(self.embeddings, selected) ** 2
             min_dists = dists.min(dim=1).values
-            # Pick point with max distance
             indices[i] = min_dists.argmax()
 
         return indices
+
+    def _select_landmarks_leverage(self) -> torch.Tensor:
+        """Ridge leverage score sampling via pilot kernel eigendecomposition."""
+        pilot_size = min(self.landmark_pilot_size, self.n)
+        if pilot_size == self.n:
+            pilot_idx = torch.arange(self.n, device=self.device)
+        else:
+            pilot_idx = torch.randperm(self.n, device=self.device)[:pilot_size]
+
+        pilot_embeddings = self.embeddings[pilot_idx]
+        gram = pilot_embeddings @ pilot_embeddings.T
+        k_pilot = exp_safe(gram, skip_clamp=self.skip_clamp)
+
+        # Eigendecomposition: K = U Λ U^T
+        eigenvalues, eigenvectors = torch.linalg.eigh(k_pilot)
+        # Leverage scores: l_i = Σ_k (λ_k / (λ_k + λ)) * U_{ik}^2
+        scaled = eigenvalues / (eigenvalues + self.lambda_reg)
+        leverage_scores = (eigenvectors**2) @ scaled  # (pilot_size,)
+        leverage_scores = leverage_scores.clamp(min=0)
+
+        # Sample m landmarks without replacement proportional to scores
+        probs = leverage_scores / leverage_scores.sum()
+        sampled = torch.multinomial(probs, self.m, replacement=False)
+        return pilot_idx[sampled]
 
     def compute_kernel_matrix(self, x: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
         """Compute exponential attention kernel matrix."""
@@ -724,8 +763,16 @@ class SparseKNNAttentionKernelOperator:
 
     def diagonal(self) -> torch.Tensor:
         """Return diagonal of ``lambda I + G_approx``."""
+        diag = torch.zeros(self.n, device=self.device, dtype=self.dtype)
+        diag_mask = self.coo_indices[0] == self.coo_indices[1]
+        diag_rows = self.coo_indices[0, diag_mask]
+        diag_vals = self.coo_values[diag_mask]
+        diag[diag_rows] = diag_vals
+        # Ensure any missing diagonals are at least the exact kernel diagonal
         sq_norms = torch.sum(self.embeddings**2, dim=1)
-        return self.lambda_reg + torch.exp(sq_norms)
+        exact_diag = torch.exp(sq_norms)
+        diag = torch.maximum(diag, exact_diag)
+        return self.lambda_reg + diag
 
     def to_dense(self) -> torch.Tensor:
         """Materialise full dense matrix (for debugging only)."""
@@ -1100,3 +1147,95 @@ class SKIAttentionKernelOperator:
         gathered = v[idx_x]  # (m, vertices, p)
         out = (gathered * w_x.unsqueeze(-1)).sum(dim=1)  # (m, p)
         return out
+
+
+class TwoScaleAttentionKernelOperator:
+    """Two-scale kernel operator combining global low-rank + local sparse k-NN.
+
+    Computes ``K = alpha * K_global + (1 - alpha) * K_local`` where:
+    - ``K_global`` is a Nyström low-rank approximation.
+    - ``K_local`` is a sparse k-NN graph in embedding space.
+
+    This captures both global coherence and local sharpness, reducing
+    oversmoothing compared to either approximation alone.
+
+    Args:
+        embeddings: Tensor of shape ``(n, embedding_dim)``.
+        lambda_reg: Tikhonov regularisation ``lambda``.
+        alpha: Mixing coefficient in ``[0, 1]`` (default 0.5).
+        num_landmarks: Number of landmarks for the global Nyström component.
+        k_neighbors: Number of neighbours for the local sparse component.
+        chunk_size: Chunk size for kernel evaluations.
+        device: torch device.
+        dtype: torch dtype.
+    """
+
+    def __init__(
+        self,
+        embeddings: torch.Tensor,
+        lambda_reg: float = 1e-2,
+        alpha: float = 0.5,
+        num_landmarks: Optional[int] = None,
+        k_neighbors: Optional[int] = None,
+        chunk_size: Optional[int] = None,
+        device: Optional[torch.device] = None,
+        dtype: Optional[torch.dtype] = None,
+    ) -> None:
+        if embeddings.dim() != 2:
+            raise ValueError(f"embeddings must be 2-D, got shape {embeddings.shape}")
+        self.n = embeddings.shape[0]
+        self.embedding_dim = embeddings.shape[1]
+        self.lambda_reg = float(lambda_reg)
+        self.alpha = float(alpha)
+        self.chunk_size = chunk_size
+
+        if device is None:
+            device = embeddings.device
+        if dtype is None:
+            dtype = embeddings.dtype
+
+        self.device = device
+        self.dtype = dtype
+        self.embeddings = embeddings.to(device=device, dtype=dtype)
+        self.shape = (self.n, self.n)
+
+        self.global_op = NystromAttentionKernelOperator(
+            embeddings=self.embeddings,
+            lambda_reg=self.lambda_reg,
+            num_landmarks=num_landmarks,
+            chunk_size=chunk_size,
+            device=device,
+            dtype=dtype,
+        )
+        self.local_op = SparseKNNAttentionKernelOperator(
+            embeddings=self.embeddings,
+            lambda_reg=self.lambda_reg,
+            k_neighbors=k_neighbors,
+            chunk_size=chunk_size,
+            device=device,
+            dtype=dtype,
+        )
+
+    def matvec(self, x: torch.Tensor) -> torch.Tensor:
+        """Apply ``(lambda I + G_twoscale)`` to vector(s) ``x``."""
+        return self.alpha * self.global_op.matvec(x) + (1.0 - self.alpha) * self.local_op.matvec(x)
+
+    def diagonal(self) -> torch.Tensor:
+        """Return diagonal of ``lambda I + G_twoscale``."""
+        return self.alpha * self.global_op.diagonal() + (1.0 - self.alpha) * self.local_op.diagonal()
+
+    def to_dense(self) -> torch.Tensor:
+        """Materialise full dense matrix (for debugging only)."""
+        return self.alpha * self.global_op.to_dense() + (1.0 - self.alpha) * self.local_op.to_dense()
+
+    def kernel_eval(
+        self,
+        x: torch.Tensor,
+        y: Optional[torch.Tensor] = None,
+        chunk_size: Optional[int] = None,
+    ) -> torch.Tensor:
+        """Evaluate two-scale kernel between queries and training points."""
+        return (
+            self.alpha * self.global_op.kernel_eval(x, y, chunk_size=chunk_size)
+            + (1.0 - self.alpha) * self.local_op.kernel_eval(x, y, chunk_size=chunk_size)
+        )

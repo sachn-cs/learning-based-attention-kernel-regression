@@ -84,7 +84,7 @@ class PreconditionedConjugateGradient:
         z = preconditioner(r)
         p = z.clone()
         rhs_norm = torch.linalg.norm(rhs)
-        if rhs_norm == 0:
+        if rhs_norm.item() == 0:
             return x
 
         if rhs.dim() == 1:
@@ -106,6 +106,7 @@ class PreconditionedConjugateGradient:
     ) -> torch.Tensor:
         """1-D (single RHS) PCG using scalar dot products for speed."""
         residual_z_old = torch.dot(r, z).item()
+        relative_residual = float("inf")
         for iteration in range(max_iter):
             matrix_vector_product = operator(p)
             p_dot_ap = torch.dot(p, matrix_vector_product).item()
@@ -278,7 +279,7 @@ class GradientDescent:
         for iteration in range(self.max_iter):
             r = rhs - operator(x)
             self.residual_norm = torch.linalg.norm(r).item()
-            rel_res = self.residual_norm / (b_norm + 1e-16)
+            rel_res = self.residual_norm / b_norm
             if rel_res <= self.tol:
                 self.iterations = iteration + 1
                 if self.verbose:

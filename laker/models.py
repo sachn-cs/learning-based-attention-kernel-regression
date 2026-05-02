@@ -14,25 +14,18 @@ from laker.distributed_kernels import DistributedAttentionKernelOperator
 from laker.embeddings import PositionEmbedding
 from laker.kernels import (
     AttentionKernelOperator,
+    KernelOperator,
     NystromAttentionKernelOperator,
     RandomFeatureAttentionKernelOperator,
     SKIAttentionKernelOperator,
     SparseKNNAttentionKernelOperator,
+    TwoScaleAttentionKernelOperator,
     exp_safe,
 )
 from laker.preconditioner import CCCPPreconditioner
 from laker.solvers import PreconditionedConjugateGradient
 
 logger = logging.getLogger(__name__)
-
-KernelOperator = Union[
-    AttentionKernelOperator,
-    NystromAttentionKernelOperator,
-    RandomFeatureAttentionKernelOperator,
-    SparseKNNAttentionKernelOperator,
-    SKIAttentionKernelOperator,
-    DistributedAttentionKernelOperator,
-]
 
 
 class LAKERRegressor:
@@ -102,6 +95,10 @@ class LAKERRegressor:
         k_neighbors: Optional[int] = None,
         grid_size: Optional[int] = None,
         distributed: bool = False,
+        twoscale_alpha: float = 0.5,
+        landmark_method: str = "greedy",
+        landmark_pilot_size: int = 1000,
+        preconditioner: str = "cccp",
         embedding_dtype: Optional[torch.dtype] = None,
         device: Optional[Union[str, torch.device]] = None,
         dtype: Optional[torch.dtype] = None,
@@ -125,15 +122,23 @@ class LAKERRegressor:
             raise ValueError(f"pcg_tol must be positive, got {pcg_tol}")
         if pcg_max_iter <= 0:
             raise ValueError(f"pcg_max_iter must be positive, got {pcg_max_iter}")
-        if kernel_approx not in (None, "nystrom", "rff", "knn", "ski"):
+        if kernel_approx not in (None, "nystrom", "rff", "knn", "ski", "twoscale"):
             raise ValueError(
-                "kernel_approx must be None, 'nystrom', 'rff', 'knn', or 'ski', "
+                "kernel_approx must be None, 'nystrom', 'rff', 'knn', 'ski', or 'twoscale',"
                 f"got {kernel_approx}"
             )
         if k_neighbors is not None and k_neighbors <= 0:
             raise ValueError(f"k_neighbors must be positive, got {k_neighbors}")
         if grid_size is not None and grid_size < 2:
             raise ValueError(f"grid_size must be at least 2, got {grid_size}")
+        if not 0.0 <= twoscale_alpha <= 1.0:
+            raise ValueError(f"twoscale_alpha must be in [0, 1], got {twoscale_alpha}")
+        if landmark_method not in ("greedy", "leverage"):
+            raise ValueError(f"landmark_method must be 'greedy' or 'leverage', got {landmark_method}")
+        if landmark_pilot_size <= 0:
+            raise ValueError(f"landmark_pilot_size must be positive, got {landmark_pilot_size}")
+        if preconditioner not in ("cccp", "adaptive"):
+            raise ValueError(f"preconditioner must be 'cccp' or 'adaptive', got {preconditioner}")
 
         self.embedding_dim = embedding_dim
         self.lambda_reg = lambda_reg
@@ -152,6 +157,10 @@ class LAKERRegressor:
         self.num_features = num_features
         self.k_neighbors = k_neighbors
         self.grid_size = grid_size
+        self.twoscale_alpha = twoscale_alpha
+        self.landmark_method = landmark_method
+        self.landmark_pilot_size = landmark_pilot_size
+        self.preconditioner_strategy = preconditioner
         self.distributed = distributed
         self.verbose = verbose
 
@@ -221,7 +230,19 @@ class LAKERRegressor:
                 logger.info("Auto-selected chunk_size=%d for n=%d", chunk_size_local, n)
 
         operator: KernelOperator
-        if self.kernel_approx is None:
+        if self.distributed and self.kernel_approx is None:
+            operator = DistributedAttentionKernelOperator(
+                embeddings=embeddings,
+                lambda_reg=lambda_value,
+                master_device=self.device,
+                dtype=self.dtype,
+            )
+            if self.verbose:
+                logger.info(
+                    "Using distributed kernel on %d device(s)",
+                    len(cast(DistributedAttentionKernelOperator, operator).devices),
+                )
+        elif self.kernel_approx is None:
             operator = AttentionKernelOperator(
                 embeddings=embeddings,
                 lambda_reg=lambda_value,
@@ -234,14 +255,17 @@ class LAKERRegressor:
                 embeddings=embeddings,
                 lambda_reg=lambda_value,
                 num_landmarks=self.num_landmarks,
+                landmark_method=self.landmark_method,
+                landmark_pilot_size=self.landmark_pilot_size,
                 chunk_size=chunk_size_local,
                 device=self.device,
                 dtype=self.dtype,
             )
             if self.verbose:
                 logger.info(
-                    "Using Nyström approximation with m=%d landmarks",
+                    "Using Nyström approximation with m=%d landmarks (%s)",
                     cast(NystromAttentionKernelOperator, operator).m,
+                    self.landmark_method,
                 )
         elif self.kernel_approx == "rff":
             operator = RandomFeatureAttentionKernelOperator(
@@ -283,17 +307,21 @@ class LAKERRegressor:
                     "Using SKI approximation with %d grid points",
                     cast(SKIAttentionKernelOperator, operator).grid_points.shape[0],
                 )
-        elif self.distributed and self.kernel_approx is None:
-            operator = DistributedAttentionKernelOperator(
+        elif self.kernel_approx == "twoscale":
+            operator = TwoScaleAttentionKernelOperator(
                 embeddings=embeddings,
                 lambda_reg=lambda_value,
-                master_device=self.device,
+                alpha=getattr(self, "twoscale_alpha", 0.5),
+                num_landmarks=self.num_landmarks,
+                k_neighbors=self.k_neighbors,
+                chunk_size=chunk_size_local,
+                device=self.device,
                 dtype=self.dtype,
             )
             if self.verbose:
                 logger.info(
-                    "Using distributed kernel on %d device(s)",
-                    len(cast(DistributedAttentionKernelOperator, operator).devices),
+                    "Using two-scale kernel (alpha=%.2f)",
+                    cast(TwoScaleAttentionKernelOperator, operator).alpha,
                 )
         else:
             raise ValueError(f"Unknown kernel_approx={self.kernel_approx}")
@@ -305,8 +333,27 @@ class LAKERRegressor:
         n: int,
         gamma: Optional[float] = None,
         num_probes: Optional[int] = None,
+        seed: Optional[int] = None,
+        diagonal: Optional[torch.Tensor] = None,
     ) -> CCCPPreconditioner:
-        """Learn the CCCP preconditioner for a given matvec."""
+        """Learn the preconditioner for a given matvec."""
+        if self.preconditioner_strategy == "adaptive":
+            from laker.preconditioner import AdaptivePreconditioner
+
+            preconditioner = AdaptivePreconditioner(
+                gamma=gamma if gamma is not None else self.gamma,
+                num_probes=num_probes if num_probes is not None else self.num_probes,
+                epsilon=self.epsilon,
+                base_rho=self.base_rho,
+                max_iter=self.cccp_max_iter,
+                tol=self.cccp_tol,
+                verbose=self.verbose,
+                device=self.device,
+                dtype=self.dtype,
+            )
+            preconditioner.build(matvec, n, diagonal=diagonal, seed=seed)
+            return preconditioner
+
         preconditioner = CCCPPreconditioner(
             num_probes=num_probes if num_probes is not None else self.num_probes,
             gamma=gamma if gamma is not None else self.gamma,
@@ -318,7 +365,7 @@ class LAKERRegressor:
             device=self.device,
             dtype=self.dtype,
         )
-        preconditioner.build(matvec, n)
+        preconditioner.build(matvec, n, seed=seed)
         return preconditioner
 
     def solve_pcg(
@@ -357,6 +404,7 @@ class LAKERRegressor:
         x: Union[torch.Tensor, "numpy.ndarray"],
         y: Union[torch.Tensor, "numpy.ndarray"],
         x0: Optional[torch.Tensor] = None,
+        seed: Optional[int] = None,
     ) -> "LAKERRegressor":
         """Fit the LAKER model to sparse measurements.
 
@@ -364,6 +412,7 @@ class LAKERRegressor:
             x: Measurement locations of shape ``(n, dx)``.
             y: Noisy observations of shape ``(n,)`` or ``(n, 1)``.
             x0: Optional warm-start for PCG initial guess.
+            seed: Optional random seed for preconditioner probe generation.
 
         Returns:
             ``self`` for method chaining.
@@ -379,10 +428,15 @@ class LAKERRegressor:
         if y.dim() != 1:
             raise ValueError(f"y must be 1-D, got shape {y.shape}")
 
+        self.x_train = x
+        self.y_train = y
         self.embeddings = self.compute_embeddings(x)
         self.kernel_operator = self.build_kernel_operator(self.embeddings)
         self.preconditioner = self.build_preconditioner(
-            self.kernel_operator.matvec, self.embeddings.shape[0]
+            self.kernel_operator.matvec,
+            self.embeddings.shape[0],
+            seed=seed,
+            diagonal=self.kernel_operator.diagonal(),
         )
         self.alpha, self.pcg_iterations_ = self.solve_pcg(
             self.kernel_operator, self.preconditioner, y, x0=x0
@@ -476,6 +530,7 @@ class LAKERRegressor:
                             train_embeddings.shape[0],
                             gamma=gamma_value,
                             num_probes=num_probes_value,
+                            diagonal=kernel_op.diagonal(),
                         )
                         alpha, _ = self.solve_pcg(
                             kernel_op,
@@ -733,19 +788,19 @@ class LAKERRegressor:
 
         # Track total new points since last full rebuild
         total_new = getattr(self, "partial_fit_count", 0) + m
-        self.partial_fit_count = total_new
 
         if total_new >= rebuild_threshold:
             # Full rebuild: concatenate all data and refit
             if self.verbose:
                 logger.info("partial_fit: rebuilding after %d new points", total_new)
-            # We don't store the full historical dataset, so this requires
-            # the user to manage data externally.  Instead we just note
-            # that a threshold was hit and recommend ``fit()``.
+            # Reset counter so the user can catch the error and retry later
+            self.partial_fit_count = 0
             raise RuntimeError(
                 "partial_fit rebuild threshold exceeded. "
                 "Please concatenate all data and call fit() for a full refit."
             )
+
+        self.partial_fit_count = total_new
 
         # Compute embeddings for new points
         embedded_input = x_new.to(dtype=self.embedding_dtype)
@@ -763,12 +818,10 @@ class LAKERRegressor:
 
         # For the enlarged RHS, warm-start from old alpha (scaled by forgetting factor)
         old_alpha = self.alpha * forgetting_factor
-        y_extended = torch.cat(
-            [
-                torch.zeros(old_n, device=self.device, dtype=self.dtype),
-                y_new,
-            ]
-        )
+        y_old = getattr(self, "y_train", None)
+        if y_old is None:
+            y_old = torch.zeros(old_n, device=self.device, dtype=self.dtype)
+        y_extended = torch.cat([y_old, y_new])
 
         # We need to solve (K_new + lambda I) alpha_new = y_extended.
         # Warm-start with [old_alpha * forgetting_factor, 0]
@@ -783,6 +836,7 @@ class LAKERRegressor:
         self.preconditioner = self.build_preconditioner(
             self.kernel_operator.matvec,
             self.embeddings.shape[0],
+            diagonal=self.kernel_operator.diagonal(),
         )
 
         self.alpha, self.pcg_iterations_ = self.solve_pcg(
@@ -791,6 +845,11 @@ class LAKERRegressor:
             y_extended,
             x0=x0,
         )
+
+        # Store extended training targets for future partial_fit calls
+        self.y_train = y_extended
+        if hasattr(self, "x_train") and self.x_train is not None:
+            self.x_train = torch.cat([self.x_train, x_new], dim=0)
 
         if self.verbose:
             logger.info(
@@ -820,6 +879,7 @@ class LAKERRegressor:
                 train_embeddings.shape[0],
                 gamma=gamma_value,
                 num_probes=num_probes_value,
+                diagonal=kernel_op.diagonal(),
             )
             alpha, _ = self.solve_pcg(kernel_op, precond, y[train_idx])
 
@@ -832,6 +892,7 @@ class LAKERRegressor:
             y_val_pred = k_val @ alpha
             return torch.sqrt(torch.mean((y_val_pred - y[val_idx]) ** 2)).item()
         except (RuntimeError, ValueError):
+            logger.debug("bo_eval failed", exc_info=True)
             return float("inf")
 
     def fit_path(
@@ -886,7 +947,11 @@ class LAKERRegressor:
             kernel_op = self.build_kernel_operator(embeddings, lambda_reg=lambda_reg_value)
             if precond is None or not reuse_precond:
                 precond = self.build_preconditioner(
-                    kernel_op.matvec, n, gamma=self.gamma, num_probes=self.num_probes
+                    kernel_op.matvec,
+                    n,
+                    gamma=self.gamma,
+                    num_probes=self.num_probes,
+                    diagonal=kernel_op.diagonal(),
                 )
             alpha, iters = self.solve_pcg(kernel_op, precond, y, x0=x0)
             alphas.append(alpha)
@@ -897,12 +962,59 @@ class LAKERRegressor:
             rel_reses.append(final_res)
             x0 = alpha.clone()
 
-        return {
+        self.path_ = {
             "lambda_reg": sorted_lambdas,
             "alphas": alphas,
             "pcg_iters": pcg_iters,
             "final_rel_res": rel_reses,
         }
+        return self.path_
+
+    def fit_continuation(
+        self,
+        x: Union[torch.Tensor, "numpy.ndarray"],
+        y: Union[torch.Tensor, "numpy.ndarray"],
+        lambda_max: Optional[float] = None,
+        lambda_min: Optional[float] = None,
+        n_stages: int = 5,
+        reuse_precond: bool = True,
+    ) -> "LAKERRegressor":
+        """Fit with a continuation schedule over decreasing regularisation.
+
+        Solves a sequence ``(lambda_t I + K) alpha_t = y`` with geometric decay
+        from ``lambda_max`` to ``lambda_min``, warm-starting PCG and optionally
+        reusing the preconditioner at each stage.
+
+        Args:
+            x: Measurement locations of shape ``(n, dx)``.
+            y: Noisy observations of shape ``(n,)``.
+            lambda_max: Starting regularisation. Defaults to ``10 * self.lambda_reg``.
+            lambda_min: Ending regularisation. Defaults to ``self.lambda_reg``.
+            n_stages: Number of continuation stages (default 5).
+            reuse_precond: If ``True``, reuse preconditioner across stages.
+
+        Returns:
+            ``self`` fitted at ``lambda_min``.
+        """
+        if lambda_max is None:
+            lambda_max = 10.0 * self.lambda_reg
+        if lambda_min is None:
+            lambda_min = self.lambda_reg
+        if n_stages < 1:
+            raise ValueError(f"n_stages must be positive, got {n_stages}")
+        if lambda_max <= 0 or lambda_min <= 0:
+            raise ValueError("lambda_max and lambda_min must be positive")
+
+        # Geometric schedule: lambda_max * r^(k) for k = 0..n_stages-1, ending at lambda_min
+        ratio = (lambda_min / lambda_max) ** (1.0 / max(1, n_stages - 1))
+        schedule = [lambda_max * (ratio**k) for k in range(n_stages)]
+        schedule[-1] = lambda_min  # ensure exact end value
+
+        path = self.fit_path(x, y, lambda_reg_grid=schedule, reuse_precond=reuse_precond)
+        self.lambda_reg = float(lambda_min)
+        self.alpha = path["alphas"][-1]
+        self.pcg_iterations_ = path["pcg_iters"][-1]
+        return self
 
     def fit_learned_embeddings(
         self,
@@ -1229,6 +1341,28 @@ class LAKERRegressor:
         rmse = torch.sqrt(torch.mean((y_pred - y_true) ** 2)).item()
         return -rmse
 
+    def score_r2(
+        self,
+        x: Union[torch.Tensor, "numpy.ndarray"],
+        y: Union[torch.Tensor, "numpy.ndarray"],
+    ) -> float:
+        """Compute the coefficient of determination R^2.
+
+        Args:
+            x: Test locations of shape ``(m, dx)``.
+            y: Ground-truth values of shape ``(m,)``.
+
+        Returns:
+            R^2 score (1.0 is perfect prediction).
+        """
+        y_pred = self.predict(x)
+        y_true = to_tensor(y, device=self.device, dtype=self.dtype).squeeze()
+        ss_res = torch.sum((y_true - y_pred) ** 2).item()
+        ss_tot = torch.sum((y_true - torch.mean(y_true)) ** 2).item()
+        if ss_tot == 0:
+            return 1.0 if ss_res == 0 else 0.0
+        return 1.0 - ss_res / ss_tot
+
     def condition_number(self) -> float:
         """Return the condition number of the preconditioned system.
 
@@ -1489,6 +1623,23 @@ class LAKERRegressor:
                 embeddings=model.embeddings,
                 lambda_reg=model.lambda_reg,
                 num_features=model.num_features,
+                device=model.device,
+                dtype=dtype,
+            )
+        elif model.kernel_approx == "knn":
+            model.kernel_operator = SparseKNNAttentionKernelOperator(
+                embeddings=model.embeddings,
+                lambda_reg=model.lambda_reg,
+                k_neighbors=model.k_neighbors,
+                chunk_size=model.chunk_size,
+                device=model.device,
+                dtype=dtype,
+            )
+        elif model.kernel_approx == "ski":
+            model.kernel_operator = SKIAttentionKernelOperator(
+                embeddings=model.embeddings,
+                lambda_reg=model.lambda_reg,
+                grid_size=model.grid_size,
                 device=model.device,
                 dtype=dtype,
             )

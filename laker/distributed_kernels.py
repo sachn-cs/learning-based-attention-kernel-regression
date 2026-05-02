@@ -10,7 +10,7 @@ from typing import Optional
 
 import torch
 
-from laker.kernels import AttentionKernelOperator
+from laker.kernels import AttentionKernelOperator, exp_safe
 
 logger = logging.getLogger(__name__)
 
@@ -139,7 +139,7 @@ class DistributedAttentionKernelOperator:
             for j_start in range(0, self.n, chunk_size_local):
                 j_end = min(j_start + chunk_size_local, self.n)
                 gram_block = local_embeddings @ full_embeddings_device[j_start:j_end].T
-                torch.exp(gram_block, out=gram_block)
+                exp_safe(gram_block, out=gram_block, skip_clamp=False)
                 if device_tensor.dim() == 1:
                     local_out[start:end].addmv_(gram_block, device_tensor[j_start:j_end])
                 else:
@@ -168,7 +168,7 @@ class DistributedAttentionKernelOperator:
             [operator.embeddings.to(self.master_device) for operator in self.operators], dim=0
         )
         gram = full_embed @ full_embed.T
-        torch.exp(gram, out=gram)
+        exp_safe(gram, out=gram, skip_clamp=False)
         gram.diagonal().add_(self.lambda_reg)
         return gram
 

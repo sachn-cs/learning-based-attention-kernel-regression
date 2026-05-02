@@ -12,8 +12,28 @@ DEFAULT_DEVICE: torch.device = torch.device("cpu")
 DEFAULT_DTYPE: torch.dtype = torch.float32
 
 
+_ENV_INIT_DONE = False
+
+
+def _init_from_env() -> None:
+    """Apply LAKER_DEVICE / LAKER_DTYPE environment variables once."""
+    global _ENV_INIT_DONE, DEFAULT_DEVICE, DEFAULT_DTYPE
+    if _ENV_INIT_DONE:
+        return
+    _ENV_INIT_DONE = True
+    env_device = os.environ.get("LAKER_DEVICE")
+    if env_device:
+        set_default_device(env_device)
+    env_dtype = os.environ.get("LAKER_DTYPE")
+    if env_dtype == "float32":
+        set_default_dtype(torch.float32)
+    elif env_dtype == "float64":
+        set_default_dtype(torch.float64)
+
+
 def get_default_device() -> torch.device:
     """Return the current default compute device."""
+    _init_from_env()
     return DEFAULT_DEVICE
 
 
@@ -45,6 +65,7 @@ def set_default_device(device: Optional[Union[str, torch.device]] = None) -> tor
 
 def get_default_dtype() -> torch.dtype:
     """Return the current default floating-point dtype."""
+    _init_from_env()
     return DEFAULT_DTYPE
 
 
@@ -100,12 +121,3 @@ def to_tensor(
     return torch.as_tensor(data, device=device, dtype=dtype)
 
 
-# Initialise from environment on import
-env_device = os.environ.get("LAKER_DEVICE")
-if env_device:
-    set_default_device(env_device)
-env_dtype = os.environ.get("LAKER_DTYPE")
-if env_dtype == "float32":
-    set_default_dtype(torch.float32)
-elif env_dtype == "float64":
-    set_default_dtype(torch.float64)

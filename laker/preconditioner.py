@@ -98,13 +98,17 @@ class CCCPPreconditioner:
         self.q_eigenvectors: Optional[torch.Tensor] = None  # (nr, nr)
 
     def build(
-        self, operator: Callable[[torch.Tensor], torch.Tensor], n: int
+        self,
+        operator: Callable[[torch.Tensor], torch.Tensor],
+        n: int,
+        seed: Optional[int] = None,
     ) -> "CCCPPreconditioner":
         """Learn the preconditioner for an ``n x n`` operator.
 
         Args:
             operator: Callable that applies ``(lambda I + G)`` to a vector.
             n: Problem dimension.
+            seed: Optional random seed for probe generation.
 
         Returns:
             ``self`` for method chaining.
@@ -116,7 +120,10 @@ class CCCPPreconditioner:
             logger.info("Building CCCP preconditioner: n=%d, N_r=%d", n, self.nr)
 
         # 1. Generate random probes and normalise (Eq. 14)
-        random_probes = torch.randn(n, self.nr, device=self.device, dtype=self.dtype)
+        gen = torch.Generator(device=self.device)
+        if seed is not None:
+            gen.manual_seed(seed)
+        random_probes = torch.randn(n, self.nr, device=self.device, dtype=self.dtype, generator=gen)
         operator_probes = operator(random_probes)
         probe_norms = torch.linalg.norm(operator_probes, dim=0, keepdim=True)
         normalized_probes = operator_probes / probe_norms.clamp(min=self.epsilon)
@@ -306,3 +313,133 @@ class CCCPPreconditioner:
         eigvals, eigvecs = torch.linalg.eigh(preconditioner_covariance)
         eigvals = eigvals.clamp(min=self.epsilon)
         return eigvecs @ torch.diag(eigvals.rsqrt()) @ eigvecs.T
+
+
+class AdaptivePreconditioner:
+    """Lightweight policy that selects among preconditioners based on cheap diagnostics.
+
+    Runs a small number of random probes to estimate the condition number of
+    the operator via power iteration, then chooses:
+    - ``JacobiPreconditioner`` if ``κ < 1e3`` (fast, well-conditioned).
+    - ``CCCPPreconditioner`` if ``κ < 1e6`` (robust, moderate conditioning).
+    - ``CCCPPreconditioner`` with increased probes if ``κ >= 1e6``.
+
+    Args:
+        gamma: CCCP regularisation parameter.
+        num_probes: Base number of random directions for CCCP.
+        epsilon: Numerical safeguard.
+        base_rho: Base shrinkage parameter.
+        max_iter: Maximum CCCP iterations.
+        tol: CCCP convergence tolerance.
+        verbose: Whether to log progress.
+        device: torch device.
+        dtype: torch dtype.
+    """
+
+    def __init__(
+        self,
+        gamma: float = 1e-1,
+        num_probes: Optional[int] = None,
+        epsilon: float = 1e-8,
+        base_rho: float = 0.05,
+        max_iter: int = 200,
+        tol: float = 1e-6,
+        verbose: bool = True,
+        device: Optional[torch.device] = None,
+        dtype: Optional[torch.dtype] = None,
+    ) -> None:
+        self.gamma = float(gamma)
+        self.num_probes = num_probes
+        self.epsilon = float(epsilon)
+        self.base_rho = float(base_rho)
+        self.max_iter = int(max_iter)
+        self.tol = float(tol)
+        self.verbose = verbose
+        if device is None:
+            device = get_default_device()
+        if dtype is None:
+            dtype = get_default_dtype()
+        self.device = device
+        self.dtype = dtype
+        self._inner = None
+        self._inner_name = None
+
+    def build(
+        self,
+        operator: Callable[[torch.Tensor], torch.Tensor],
+        n: int,
+        diagonal: Optional[torch.Tensor] = None,
+        seed: Optional[int] = None,
+    ) -> "AdaptivePreconditioner":
+        """Run diagnostics and select a preconditioner."""
+        num_diag_probes = min(10, n)
+        gen = torch.Generator(device=self.device)
+        if seed is not None:
+            gen.manual_seed(seed)
+        probes = torch.randn(n, num_diag_probes, device=self.device, dtype=self.dtype, generator=gen)
+        op_probes = operator(probes)
+
+        # Power iteration for largest eigenvalue on a single probe
+        v = op_probes[:, 0].clone()
+        for _ in range(5):
+            v = operator(v.unsqueeze(1)).squeeze(1)
+            v = v / torch.linalg.norm(v)
+        lambda_max = torch.dot(v, operator(v)).item()
+
+        # Estimate smallest eigenvalue via Rayleigh quotient on random probes
+        rayleighs = torch.sum(probes * op_probes, dim=0) / torch.sum(probes**2, dim=0)
+        lambda_min = rayleighs.min().item()
+
+        cond = lambda_max / max(lambda_min, 1e-12)
+
+        if cond < 1e3 and diagonal is not None:
+            from laker.solvers import JacobiPreconditioner
+
+            self._inner = JacobiPreconditioner(diagonal)
+            self._inner_name = "jacobi"
+            if self.verbose:
+                logger.info("AdaptivePreconditioner selected Jacobi (κ≈%.2e)", cond)
+        elif cond < 1e6:
+            cccp = CCCPPreconditioner(
+                num_probes=self.num_probes,
+                gamma=self.gamma,
+                epsilon=self.epsilon,
+                base_rho=self.base_rho,
+                max_iter=self.max_iter,
+                tol=self.tol,
+                verbose=self.verbose,
+                device=self.device,
+                dtype=self.dtype,
+            )
+            cccp.build(operator, n, seed=seed)
+            self._inner = cccp
+            self._inner_name = "cccp"
+            if self.verbose:
+                logger.info("AdaptivePreconditioner selected CCCP (κ≈%.2e)", cond)
+        else:
+            cccp = CCCPPreconditioner(
+                num_probes=(self.num_probes if self.num_probes is not None else max(200, int(2 * n**0.5)))
+                * 2,
+                gamma=self.gamma,
+                epsilon=self.epsilon,
+                base_rho=self.base_rho,
+                max_iter=self.max_iter,
+                tol=self.tol,
+                verbose=self.verbose,
+                device=self.device,
+                dtype=self.dtype,
+            )
+            cccp.build(operator, n, seed=seed)
+            self._inner = cccp
+            self._inner_name = "cccp_aggressive"
+            if self.verbose:
+                logger.info("AdaptivePreconditioner selected aggressive CCCP (κ≈%.2e)", cond)
+        return self
+
+    def apply(self, x: torch.Tensor) -> torch.Tensor:
+        """Apply the selected preconditioner."""
+        if self._inner is None:
+            raise RuntimeError("Preconditioner has not been built. Call build() first.")
+        if self._inner_name == "jacobi":
+            return self._inner.apply(x)
+        return self._inner.apply(x)

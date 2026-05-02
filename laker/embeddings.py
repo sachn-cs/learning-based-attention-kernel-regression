@@ -74,19 +74,30 @@ class PositionEmbedding(nn.Module):
             torch.rand(num_fourier, generator=gen, device=device, dtype=dtype) * 2.0 * math.pi,
         )
 
-        # 2. MLP weights use PyTorch's default init (kaiming_uniform_) with the
-        #    *global* RNG temporarily seeded for reproducibility.  This keeps
-        #    backward compatibility with the original LAKER paper code while
-        #    still making the overall module deterministic.
+        # 2. MLP weights are initialised manually with a local Generator so the
+        #    global RNG is never mutated (thread-safe and deterministic).
         mlp_hidden = max(embedding_dim, num_fourier // 2)
-        saved_state = torch.get_rng_state()
-        torch.manual_seed(seed)
         self.mlp = nn.Sequential(
             nn.Linear(num_fourier, mlp_hidden, device=device, dtype=dtype),
             nn.Tanh(),
             nn.Linear(mlp_hidden, embedding_dim, device=device, dtype=dtype),
         )
-        torch.set_rng_state(saved_state)
+        with torch.no_grad():
+            for layer in self.mlp:
+                if isinstance(layer, nn.Linear):
+                    # kaiming_uniform_-style init using local Generator
+                    bound = math.sqrt(1.0 / layer.weight.shape[1])
+                    layer.weight.copy_(
+                        torch.rand(layer.weight.shape, generator=gen, device=device, dtype=dtype)
+                        * (2 * bound)
+                        - bound
+                    )
+                    if layer.bias is not None:
+                        layer.bias.copy_(
+                            torch.rand(layer.bias.shape, generator=gen, device=device, dtype=dtype)
+                            * (2 * bound)
+                            - bound
+                        )
 
         self.to(device=device, dtype=dtype)
 
