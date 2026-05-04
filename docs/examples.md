@@ -231,3 +231,147 @@ logger.info("RFF RMSE vs exact: %.3f", rmse_rff)
 ```
 
 For $n = 5\,000$, Nyström with $m = 200$ landmarks is typically **50–100$\times$** faster per matvec than the exact kernel, with a relative approximation error below 5%.
+
+---
+
+## Spectral-Shaped Kernel
+
+Replace the plain exponential kernel with a learned spectral decomposition:
+
+```python
+import torch
+from laker import LAKERRegressor
+
+model = LAKERRegressor(
+    embedding_dim=10,
+    kernel_approx="spectral",
+    spectral_knots=5,
+    lambda_reg=1e-2,
+    dtype=torch.float64,
+    verbose=True,
+)
+model.fit(x_train, y_train)
+```
+
+The spectral kernel performs an economy SVD of the embedding matrix and learns a
+monotone spline `g` over the eigenvalues. This directly controls conditioning and
+can improve both fit quality and solver behaviour.
+
+---
+
+## Two-Scale Kernel
+
+Combine global coherence with local sharpness:
+
+```python
+model = LAKERRegressor(
+    embedding_dim=10,
+    kernel_approx="twoscale",
+    num_landmarks=100,
+    k_neighbors=30,
+    lambda_reg=1e-2,
+    dtype=torch.float64,
+    verbose=True,
+)
+model.fit(x_train, y_train)
+```
+
+The two-scale kernel mixes a Nyström global approximation with a sparse k-NN
+local graph, reducing oversmoothing compared to either approximation alone.
+
+---
+
+## Bilevel Hyperparameter Learning
+
+Optimise `lambda_reg` and embedding weights via implicit differentiation:
+
+```python
+import torch
+from laker import LAKERRegressor
+
+n = len(x_train)
+n_val = n // 5
+x_val = x_train[:n_val]
+y_val = y_train[:n_val]
+x_tr = x_train[n_val:]
+y_tr = y_train[n_val:]
+
+model = LAKERRegressor(embedding_dim=10, dtype=torch.float64, verbose=True)
+model.fit(x_tr, y_tr)
+model.fit_bilevel(
+    x_tr, y_tr, x_val, y_val,
+    lr=1e-3, epochs=20, patience=5,
+)
+```
+
+Bilevel learning uses the adjoint method to compute hypergradients through the
+PCG fixed-point, avoiding expensive grid or BO outer loops.
+
+---
+
+## Uncertainty-Aware Training
+
+Train embeddings with a calibration-aware NLL objective:
+
+```python
+model = LAKERRegressor(embedding_dim=10, dtype=torch.float64, verbose=True)
+model.fit(x_train, y_train)
+model.fit_uncertainty_aware(
+    x_train, y_train,
+    lr=1e-3, epochs=50, beta=0.1, patience=5,
+)
+
+# Predictions now come with well-calibrated variance
+mean = model.predict(x_test)
+var = model.predict_variance(x_test)
+```
+
+---
+
+## Residual Corrector
+
+Add a small residual MLP on top of the base LAKER prediction:
+
+```python
+model = LAKERRegressor(embedding_dim=10, verbose=True)
+model.fit(x_train, y_train)
+model.fit_residual_corrector(
+    x_train, y_train,
+    val_fraction=0.2,
+    epochs=200,
+    patience=10,
+    weight_decay=1e-2,
+)
+```
+
+The corrector is trained with validation-split early stopping and strong L2
+regularisation to avoid overfitting the residual.
+
+---
+
+## Continuation Schedule
+
+Track a stable path to a sharper solution:
+
+```python
+import logging
+
+from laker import LAKERRegressor
+
+logger = logging.getLogger(__name__)
+
+model = LAKERRegressor(embedding_dim=10, dtype=torch.float64, verbose=True)
+model.fit_continuation(
+    x_train, y_train,
+    lambda_max=1.0,
+    lambda_min=1e-2,
+    n_stages=5,
+    reuse_precond=True,
+)
+
+path = model.path_
+for lam, iters, res in zip(
+    path["lambda_reg"], path["pcg_iters"], path["final_rel_res"]
+):
+    logger.info("lambda=%.3e  iters=%4d  rel_res=%.3e", lam, iters, res)
+```

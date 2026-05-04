@@ -40,3 +40,33 @@ def test_save_and_load():
         torch.testing.assert_close(pred_orig, pred_load, rtol=1e-5, atol=1e-5)
     finally:
         os.unlink(path)
+
+
+def test_save_and_load_with_corrector():
+    n = 40
+    x = torch.rand(n, 2) * 100.0
+    y = torch.randn(n)
+
+    model = LAKERRegressor(
+        embedding_dim=4,
+        num_probes=20,
+        cccp_max_iter=10,
+        verbose=False,
+    )
+    model.fit(x, y)
+    model.fit_residual_corrector(x, y, epochs=50, patience=10)
+
+    with tempfile.NamedTemporaryFile(suffix=".pt", delete=False) as f:
+        path = f.name
+
+    try:
+        model.save(path)
+        loaded = LAKERRegressor.load(path)
+
+        assert loaded.residual_corrector is not None
+        x_test = torch.rand(10, 2) * 100.0
+        pred_orig = model.predict(x_test)
+        pred_load = loaded.predict(x_test)
+        torch.testing.assert_close(pred_orig, pred_load, rtol=1e-5, atol=1e-5)
+    finally:
+        os.unlink(path)

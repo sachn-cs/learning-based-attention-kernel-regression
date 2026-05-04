@@ -87,6 +87,73 @@ model = LAKERRegressor(
 
 Each approximation trades accuracy for speed and memory. See [Theory](theory.md) for guidance on choosing an approximation.
 
+### Spectral-shaped kernel
+
+```python
+model = LAKERRegressor(
+    embedding_dim=10,
+    kernel_approx="spectral",
+    spectral_knots=5,
+    dtype=torch.float64,
+)
+model.fit(x_train, y_train)
+```
+
+### Two-scale kernel
+
+```python
+model = LAKERRegressor(
+    embedding_dim=10,
+    kernel_approx="twoscale",
+    num_landmarks=100,
+    k_neighbors=30,
+)
+model.fit(x_train, y_train)
+```
+
+### Bilevel hyperparameter learning
+
+```python
+model = LAKERRegressor(embedding_dim=10, dtype=torch.float64)
+model.fit(x_train, y_train)
+model.fit_bilevel(
+    x_train, y_train, x_val, y_val,
+    lr=1e-3, epochs=20, patience=5,
+)
+```
+
+### Uncertainty-aware training
+
+```python
+model = LAKERRegressor(embedding_dim=10, dtype=torch.float64)
+model.fit(x_train, y_train)
+model.fit_uncertainty_aware(
+    x_train, y_train,
+    lr=1e-3, epochs=50, beta=0.1, patience=5,
+)
+var = model.predict_variance(x_test)
+```
+
+### Residual corrector
+
+```python
+model = LAKERRegressor(embedding_dim=10)
+model.fit(x_train, y_train)
+model.fit_residual_corrector(
+    x_train, y_train, epochs=200, patience=10,
+)
+```
+
+### Continuation schedule
+
+```python
+model = LAKERRegressor(embedding_dim=10, dtype=torch.float64)
+model.fit_continuation(
+    x_train, y_train,
+    lambda_max=1.0, lambda_min=1e-2, n_stages=5,
+)
+```
+
 ## CLI Usage
 
 For batch workflows you can use the bundled command-line tool:

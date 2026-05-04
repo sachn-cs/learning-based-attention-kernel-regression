@@ -34,12 +34,16 @@ def load_tensor(path: str) -> torch.Tensor:
     Raises:
         ValueError: If the file extension is not supported.
         FileNotFoundError: If the file does not exist.
+
     """
     if path.endswith(".npy"):
         return torch.from_numpy(numpy.load(path))
     if path.endswith(".pt") or path.endswith(".pth"):
         return torch.load(path, weights_only=True)
-    raise ValueError(f"Unsupported file extension for {path}. " "Expected .pt, .pth, or .npy.")
+    raise ValueError(
+        f"Unsupported file extension for {path}. "
+        "Expected .pt, .pth, or .npy."
+    )
 
 
 def main() -> None:
@@ -50,30 +54,58 @@ def main() -> None:
     )
     from laker import __version__
 
-    parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
-    parser.add_argument("-v", "--verbose", action="store_true", help="Enable debug logging")
+    parser.add_argument(
+        "--version", action="version", version=f"%(prog)s {__version__}"
+    )
+    parser.add_argument(
+        "-v", "--verbose", action="store_true", help="Enable debug logging"
+    )
 
     subparsers = parser.add_subparsers(dest="command")
 
     # Fit command
     fit_parser = subparsers.add_parser("fit", help="Fit a LAKER model to data")
-    fit_parser.add_argument("--locations", required=True, help="Path to locations .pt or .npy file")
     fit_parser.add_argument(
-        "--measurements", required=True, help="Path to measurements .pt or .npy file"
+        "--locations", required=True, help="Path to locations .pt or .npy file"
     )
-    fit_parser.add_argument("--output", required=True, help="Path to save fitted model")
-    fit_parser.add_argument("--lambda-reg", type=float, default=1e-2, help="Regularisation lambda")
-    fit_parser.add_argument("--gamma", type=float, default=1e-1, help="CCCP regularisation gamma")
-    fit_parser.add_argument("--embedding-dim", type=int, default=10, help="Embedding dimension")
-    fit_parser.add_argument("--num-probes", type=int, default=None, help="Number of random probes")
+    fit_parser.add_argument(
+        "--measurements",
+        required=True,
+        help="Path to measurements .pt or .npy file",
+    )
+    fit_parser.add_argument(
+        "--output", required=True, help="Path to save fitted model"
+    )
+    fit_parser.add_argument(
+        "--lambda-reg", type=float, default=1e-2, help="Regularisation lambda"
+    )
+    fit_parser.add_argument(
+        "--gamma", type=float, default=1e-1, help="CCCP regularisation gamma"
+    )
+    fit_parser.add_argument(
+        "--embedding-dim", type=int, default=10, help="Embedding dimension"
+    )
+    fit_parser.add_argument(
+        "--num-probes", type=int, default=None, help="Number of random probes"
+    )
     fit_parser.add_argument("--device", default="cpu", help="torch device")
-    fit_parser.add_argument("--dtype", default="float64", choices=["float32", "float64"])
+    fit_parser.add_argument(
+        "--dtype", default="float64", choices=["float32", "float64"]
+    )
 
     # Predict command
-    pred_parser = subparsers.add_parser("predict", help="Predict using a fitted model")
-    pred_parser.add_argument("--model", required=True, help="Path to fitted model .pt file")
-    pred_parser.add_argument("--locations", required=True, help="Path to query locations")
-    pred_parser.add_argument("--output", required=True, help="Path to save predictions")
+    pred_parser = subparsers.add_parser(
+        "predict", help="Predict using a fitted model"
+    )
+    pred_parser.add_argument(
+        "--model", required=True, help="Path to fitted model .pt file"
+    )
+    pred_parser.add_argument(
+        "--locations", required=True, help="Path to query locations"
+    )
+    pred_parser.add_argument(
+        "--output", required=True, help="Path to save predictions"
+    )
 
     args = parser.parse_args()
     setup_logging(args.verbose)
@@ -92,6 +124,7 @@ def cmd_fit(args) -> None:
 
     Args:
         args: Parsed argparse namespace with fit parameters.
+
     """
     logger.info("Loading data...")
     x = load_tensor(args.locations)
@@ -117,6 +150,7 @@ def cmd_predict(args) -> None:
 
     Args:
         args: Parsed argparse namespace with predict parameters.
+
     """
     logger.info("Loading model...")
     model = LAKERRegressor.load(args.model)

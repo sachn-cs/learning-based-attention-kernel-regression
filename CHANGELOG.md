@@ -7,17 +7,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-05-04
+
+### Added
+- **Spectral-Shaped Attention Kernel**: Added `SpectralAttentionKernelOperator` and `MonotoneSpectrumShaper`. Replaces plain `exp(EE^T)` with a learned matrix function `K = U diag(exp(g(sigma_i^2))) U^T` where `g` is a monotone spline. Improves conditioning and injects an inductive bias directly on the spectrum. Controlled via `kernel_approx="spectral"` and `spectral_knots`.
+- **Bilevel Hyperparameter Learning**: Added `BilevelOptimizer` and `implicit_diff.hypergradient`. Computes hypergradients of validation loss through the PCG fixed-point using the adjoint method. Access via `LAKERRegressor.fit_bilevel(x_train, y_train, x_val, y_val)`.
+- **Uncertainty-Aware Training**: Added `fit_uncertainty_aware()` which trains embeddings with a negative log-likelihood + calibration penalty objective: `L = NLL(y | mu, sigma^2) + beta * calibration_penalty`. Uses differentiable predictive mean and variance.
+- **Residual Corrector**: Added `ResidualCorrector` and `fit_residual_corrector()`. A tiny MLP (2 layers, 32 hidden units, dropout) trained on `y - y_hat_laker` with validation-split early stopping. Captures local misspecification without destabilising the core solver.
+- **Two-Scale Kernel**: Added `TwoScaleAttentionKernelOperator` combining a global Nyström low-rank term with a local sparse k-NN graph: `K = alpha * K_global + (1 - alpha) * K_local`. Controlled via `kernel_approx="twoscale"`, `num_landmarks`, and `k_neighbors`.
+- **Continuation Schedule**: Added `fit_continuation()` which solves a sequence of decreasing `lambda_reg` values with warm-started PCG and optional preconditioner reuse. Useful for tracking a stable regularisation path to sharper solutions.
+- **Leverage-Score Landmark Selection**: Nyström kernels now support `landmark_method="leverage"` for ridge leverage score sampling from a pilot kernel. Often gives lower approximation error than greedy k-means++ selection.
+- **Adaptive Preconditioner**: Added `AdaptivePreconditioner` with spectrum-aware probe distribution (power-iteration-biased + orthogonalised blocks). Select via `preconditioner_strategy="adaptive"`.
+- **Refactored Architecture**: Split `LAKERRegressor` internals into focused helper classes: `LAKERCore` (kernel/solve/predict), `EmbeddingTrainer` (learned embeddings, residual corrector, bilevel, uncertainty-aware), `HyperparameterSearch` (grid/BO), `ModelPersistence` (save/load), and `StreamingUpdater` (partial_fit, continuation).
+- **Math Reliability Tests**: Added `tests/test_math_correctness.py` with 18 tests covering TwoScale kernel linearity, leverage score properties, continuation monotonicity, implicit differentiation finite-difference verification, exact variance formula matching, and preconditioner linearity.
+- **Integration Tests**: Added `test_twoscale_integration`, `test_continuation_integration`, and expanded spectral kernel tests.
+- **TODO Completion**: All 6 deferred items from `TODO.md` are now implemented.
+
 ### Changed
-- **Code standardization**: Removed all semi-private naming (leading underscores) from functions, methods, classes, and variables. Replaced terse abbreviations (`cs`, `lam`, `pre`, `vt`, etc.) with descriptive PEP 8 identifiers. Replaced all `print()` calls with `logging` module usage, including in documentation code blocks.
-- **Architecture**: Introduced `Executor` abstract base class in `laker/executor.py`. Standardized the "Class + Convenience Wrapper" pattern across examples and benchmarks. All public workflows now have class implementations with optional executor injection; free-function wrappers are thin one-line conveniences only.
-- **File reorganization**: Consolidated `laker/low_rank_kernels.py`, `laker/ski_kernels.py`, and `laker/sparse_kernels.py` into `laker/kernels.py`. Renamed benchmark and example scripts to module-runnable names (`benchmarks/reproducible.py`, `benchmarks/baseline.py`, `benchmarks/approximations.py`, `benchmarks/run.py`, `examples/basic.py`, `examples/large.py`).
-- **Benchmark API**: Converted `benchmark_solver` and `benchmark_laker_vs_baselines` free functions to `SolverBenchmark` and `BaselineBenchmark` classes in `laker/benchmark.py`. Original function names preserved as thin convenience wrappers.
+- **Code standardization**: Full compliance with the Google Python Style Guide. Reformatted to 80-character line length via `black`. Fixed all `ruff` docstring violations (D107, D102, D301, D401, D205, D413). Fixed import ordering (I001). Removed unused imports (F401) and unused variables (F841).
+- **MonotoneSpectrumShaper defaults**: Changed default `raw_weights` from `0.0` to `-10.0` and `raw_slope` from `0.0` to `-2.35` to prevent `softplus(0)=0.693` from causing spectrum overflow (values of `1e21–1e125`) and PCG divergence.
+- **StreamingUpdater**: `fit_path()` now stores the final fitted state (`embeddings`, `kernel_operator`, `preconditioner`, `alpha`) on the regressor so that `fit_continuation()` produces a model ready for prediction.
+- **SKI `to_dense()`**: Fixed a shape mismatch bug where `torch.eye(n)[grid_indices]` was used instead of direct index assignment.
 
 ### Fixed
 - **Broken imports**: Fixed benchmark and example imports referencing deleted modules (`laker.low_rank_kernels`, `laker.ski_kernels`, `laker.sparse_kernels`).
 - **Dead code**: Removed unused `self.lambda_vec = None` in `AttentionKernelOperator` and unused local `kernel_mv` in `laker/benchmark.py`.
 
-### Added
+### Added (from prior release)
 - **Documentation**: Added `docs/patterns.md` documenting the Executor pattern, Class + Convenience Wrapper convention, naming rules, and logging requirements.
 - **Module structure**: Added `benchmarks/__init__.py` and `examples/__init__.py` so benchmarks and examples can be run as modules (`python -m benchmarks.reproducible`, etc.).
 
@@ -80,6 +96,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Comprehensive test suite with 14+ tests.
 - Documentation and usage examples.
 
-[Unreleased]: https://github.com/sachn-cs/laker/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/sachn-cs/laker/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/sachn-cs/laker/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/sachn-cs/laker/compare/v0.0.1...v0.3.0
 [0.0.1]: https://github.com/sachn-cs/laker/releases/tag/v0.0.1

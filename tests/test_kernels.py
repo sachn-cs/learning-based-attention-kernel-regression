@@ -71,3 +71,74 @@ def test_kernel_eval():
     k = op.kernel_eval(e_query)
     expected = torch.exp(e_query @ e_train.T)
     torch.testing.assert_close(k, expected, rtol=1e-5, atol=1e-6)
+
+
+def test_spectral_kernel_matvec_consistency():
+    """Spectral kernel matvec must match explicit dense form."""
+    torch.manual_seed(42)
+    n = 30
+    de = 4
+    e = torch.randn(n, de)
+    lam = 0.05
+    from laker.kernels import SpectralAttentionKernelOperator
+
+    op = SpectralAttentionKernelOperator(e, lambda_reg=lam, num_knots=5)
+    x = torch.randn(n)
+    y_op = op.matvec(x)
+
+    # Explicit: K = U @ diag(spectrum) @ U^T
+    k_dense = op.u_matrix @ torch.diag(op.spectrum) @ op.u_matrix.T
+    k_dense.diagonal().add_(lam)
+    y_dense = k_dense @ x
+
+    torch.testing.assert_close(y_op, y_dense, rtol=1e-4, atol=1e-5)
+
+
+def test_spectral_kernel_eval_consistency():
+    """kernel_eval must be consistent with the training spectral basis."""
+    torch.manual_seed(42)
+    n = 20
+    m = 8
+    de = 4
+    e_train = torch.randn(n, de)
+    e_query = torch.randn(m, de)
+    from laker.kernels import SpectralAttentionKernelOperator
+
+    op = SpectralAttentionKernelOperator(e_train, lambda_reg=0.1, num_knots=3)
+
+    # K(query, train) from kernel_eval
+    k_eval = op.kernel_eval(e_query, e_train)
+
+    # Same via explicit projection
+    cx = (e_query @ op.vh.T) * op.sigma_inv.unsqueeze(0)
+    cy = (e_train @ op.vh.T) * op.sigma_inv.unsqueeze(0)
+    k_manual = (cx * op.spectrum.unsqueeze(0)) @ cy.T
+
+    torch.testing.assert_close(k_eval, k_manual, rtol=1e-4, atol=1e-5)
+
+
+def test_spectral_kernel_diagonal():
+    """diagonal() must match the diagonal of the dense matrix."""
+    torch.manual_seed(42)
+    n = 15
+    de = 3
+    e = torch.randn(n, de)
+    from laker.kernels import SpectralAttentionKernelOperator
+
+    op = SpectralAttentionKernelOperator(e, lambda_reg=0.2, num_knots=4)
+    diag_op = op.diagonal()
+    diag_dense = op.to_dense().diagonal()
+    torch.testing.assert_close(diag_op, diag_dense, rtol=1e-5, atol=1e-6)
+
+
+def test_spectral_shaper_monotonicity():
+    """MonotoneSpectrumShaper output must be monotonic in its input."""
+    from laker.kernels import MonotoneSpectrumShaper
+
+    shaper = MonotoneSpectrumShaper(num_knots=5)
+    shaper.set_knots(0.0, 10.0)
+    x = torch.linspace(-2.0, 12.0, 100)
+    y = shaper(x)
+    diffs = torch.diff(y)
+    # All differences should be non-negative (monotonic)
+    assert torch.all(diffs >= -1e-6)

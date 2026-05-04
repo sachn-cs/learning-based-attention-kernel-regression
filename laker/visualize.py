@@ -13,6 +13,7 @@ class Visualizer:
     """High-level visualiser for LAKER regression outputs and diagnostics."""
 
     def __init__(self, figsize: Tuple[int, int] = (6, 5)):
+        """Initialise the visualiser."""
         self.figsize = figsize
 
     def radio_map_to_image(
@@ -30,6 +31,7 @@ class Visualizer:
 
         Returns:
             2-D NumPy array of shape ``(grid_size, grid_size)``.
+
         """
         img = predictions.detach().cpu().numpy().reshape(grid_size, grid_size)
         return img
@@ -57,6 +59,7 @@ class Visualizer:
 
         Returns:
             Matplotlib figure and axes objects.
+
         """
         try:
             import matplotlib.pyplot as plt
@@ -107,6 +110,7 @@ class Visualizer:
 
         Returns:
             Matplotlib figure and axes objects.
+
         """
         try:
             import matplotlib.pyplot as plt
@@ -118,7 +122,11 @@ class Visualizer:
         figsize = figsize if figsize is not None else self.figsize
         fig, ax = plt.subplots(figsize=figsize)
         for idx, gaps in enumerate(objective_gaps):
-            label = labels[idx] if labels and idx < len(labels) else f"Solver {idx + 1}"
+            label = (
+                labels[idx]
+                if labels and idx < len(labels)
+                else f"Solver {idx + 1}"
+            )
             ax.semilogy(gaps, label=label)
         ax.set_xlabel(xlabel)
         ax.set_ylabel(ylabel)
@@ -126,7 +134,9 @@ class Visualizer:
         ax.legend()
         ax.grid(True, which="both", ls="--", alpha=0.5)
         fig.tight_layout()
-        logger.info("Plotted convergence curves: %d series", len(objective_gaps))
+        logger.info(
+            "Plotted convergence curves: %d series", len(objective_gaps)
+        )
         return fig, ax
 
 
@@ -146,6 +156,7 @@ def radio_map_to_image(
 
     Returns:
         2-D NumPy array of shape ``(grid_size, grid_size)``.
+
     """
     img = predictions.detach().cpu().numpy().reshape(grid_size, grid_size)
     return img
@@ -177,6 +188,7 @@ def plot_radio_map(
 
     Returns:
         Matplotlib figure and axes objects.
+
     """
     visualizer = Visualizer(figsize=figsize)
     return visualizer.plot_radio_map(
@@ -207,6 +219,9 @@ def plot_convergence(
 
     Returns:
         Matplotlib figure and axes objects.
+
     """
     visualizer = Visualizer(figsize=figsize)
-    return visualizer.plot_convergence(objective_gaps, labels, title, xlabel, ylabel, figsize)
+    return visualizer.plot_convergence(
+        objective_gaps, labels, title, xlabel, ylabel, figsize
+    )

@@ -25,7 +25,9 @@ def preconditioner_apply_core(
     if x.dim() == 1:
         coeffs = (q_eigenvalues.rsqrt() - inv_sqrt_isotropic) * coeffs
     else:
-        coeffs = (q_eigenvalues.rsqrt() - inv_sqrt_isotropic).unsqueeze(-1) * coeffs
+        coeffs = (q_eigenvalues.rsqrt() - inv_sqrt_isotropic).unsqueeze(
+            -1
+        ) * coeffs
     q_correction = q_basis @ (q_eigenvectors @ coeffs)
     return inv_sqrt_isotropic * x + q_correction
 
@@ -58,6 +60,7 @@ class CCCPPreconditioner:
         verbose: Whether to log progress.
         device: torch device.
         dtype: torch dtype.
+
     """
 
     def __init__(
@@ -71,7 +74,10 @@ class CCCPPreconditioner:
         verbose: bool = True,
         device: Optional[torch.device] = None,
         dtype: Optional[torch.dtype] = None,
+        probe_strategy: str = "gaussian",
+        power_iter_steps: int = 3,
     ) -> None:
+        """Initialise the CCCP preconditioner."""
         self.num_probes = num_probes
         self.gamma = float(gamma)
         self.epsilon = float(epsilon)
@@ -79,6 +85,8 @@ class CCCPPreconditioner:
         self.max_iter = int(max_iter)
         self.tol = float(tol)
         self.verbose = verbose
+        self.probe_strategy = probe_strategy
+        self.power_iter_steps = int(power_iter_steps)
 
         if device is None:
             device = get_default_device()
@@ -112,21 +120,48 @@ class CCCPPreconditioner:
 
         Returns:
             ``self`` for method chaining.
+
         """
         self.n = n
-        nr = self.num_probes if self.num_probes is not None else max(200, int(2 * n**0.5))
+        nr = (
+            self.num_probes
+            if self.num_probes is not None
+            else max(200, int(2 * n**0.5))
+        )
         self.nr = min(nr, n)
         if self.verbose:
-            logger.info("Building CCCP preconditioner: n=%d, N_r=%d", n, self.nr)
+            logger.info(
+                "Building CCCP preconditioner: n=%d, N_r=%d", n, self.nr
+            )
 
         # 1. Generate random probes and normalise (Eq. 14)
         gen = torch.Generator(device=self.device)
         if seed is not None:
             gen.manual_seed(seed)
-        random_probes = torch.randn(n, self.nr, device=self.device, dtype=self.dtype, generator=gen)
+        random_probes = torch.randn(
+            n, self.nr, device=self.device, dtype=self.dtype, generator=gen
+        )
+
+        # Optional: power-iteration-biased probe directions
+        if self.probe_strategy == "power_iter":
+            # To avoid breaking the CCCP MLE (which assumes isotropic Gaussian
+            # probes), only a subset of the probes are power-iterated; the rest
+            # remain pure Gaussian.  This preserves unbiased spectrum coverage
+            # while concentrating extra mass on the dominant eigenspace.
+            n_power = max(1, int(self.nr * 0.25))
+            power_block = random_probes[:, :n_power]
+            for _ in range(self.power_iter_steps):
+                power_block = operator(power_block)
+                power_block = torch.linalg.qr(power_block, mode="reduced")[0]
+            random_probes = torch.cat(
+                [power_block, random_probes[:, n_power:]], dim=1
+            )
+
         operator_probes = operator(random_probes)
         probe_norms = torch.linalg.norm(operator_probes, dim=0, keepdim=True)
-        normalized_probes = operator_probes / probe_norms.clamp(min=self.epsilon)
+        normalized_probes = operator_probes / probe_norms.clamp(
+            min=self.epsilon
+        )
 
         # 2. Compute fixed QR basis: U = Q R  (economy QR)
         q_basis, qr_r = torch.linalg.qr(normalized_probes, mode="reduced")
@@ -134,24 +169,38 @@ class CCCPPreconditioner:
         self.qr_r = qr_r  # (nr, nr)
 
         # 3. CCCP iteration (Eq. 35-37)
-        shrinkage = adaptive_shrinkage_rho(self.nr, n, self.gamma, self.base_rho)
+        shrinkage = adaptive_shrinkage_rho(
+            self.nr, n, self.gamma, self.base_rho
+        )
         regularization_scale = 1.0 + self.gamma / n
         isotropic_coef = 1.0
-        q_basis_matrix = torch.zeros(self.nr, self.nr, device=self.device, dtype=self.dtype)
+        q_basis_matrix = torch.zeros(
+            self.nr, self.nr, device=self.device, dtype=self.dtype
+        )
 
         # Pre-allocate buffers reused each iteration
         eye_nr = torch.eye(self.nr, device=self.device, dtype=self.dtype)
-        factored_matrix = torch.empty(self.nr, self.nr, device=self.device, dtype=self.dtype)
-        f_gamma_q_basis = torch.empty(self.nr, self.nr, device=self.device, dtype=self.dtype)
-        shrunken_f_gamma = torch.empty(self.nr, self.nr, device=self.device, dtype=self.dtype)
+        factored_matrix = torch.empty(
+            self.nr, self.nr, device=self.device, dtype=self.dtype
+        )
+        f_gamma_q_basis = torch.empty(
+            self.nr, self.nr, device=self.device, dtype=self.dtype
+        )
+        shrunken_f_gamma = torch.empty(
+            self.nr, self.nr, device=self.device, dtype=self.dtype
+        )
 
         for iteration in range(self.max_iter):
             isotropic_coef_prev = isotropic_coef
             q_basis_matrix_prev = q_basis_matrix.clone()
 
             # Form M = isotropic_coef * I + q_basis_matrix and decompose
-            torch.add(eye_nr * isotropic_coef, q_basis_matrix, out=factored_matrix)
-            factored_eigvals, factored_eigvecs = eigh_stable(factored_matrix, eps=self.epsilon)
+            torch.add(
+                eye_nr * isotropic_coef, q_basis_matrix, out=factored_matrix
+            )
+            factored_eigvals, factored_eigvecs = eigh_stable(
+                factored_matrix, eps=self.epsilon
+            )
 
             # Compute denominators: denom_k = (R^T M^{-1} R)_{kk} + epsilon.
             # Avoid materialising the full inverse by working in the eigenbasis:
@@ -159,10 +208,15 @@ class CCCPPreconditioner:
             eigenbasis_projection = factored_eigvecs.T @ self.qr_r  # (nr, nr)
             # Scale columns of eigenbasis_projection by reciprocal eigenvalues
             scaled_eigenbasis_projection = (
-                factored_eigvals.reciprocal().unsqueeze(-1) * eigenbasis_projection
+                factored_eigvals.reciprocal().unsqueeze(-1)
+                * eigenbasis_projection
             )
-            inverse_m_r_product = eigenbasis_projection.T @ scaled_eigenbasis_projection
-            probe_denominators = torch.diagonal(inverse_m_r_product) + self.epsilon
+            inverse_m_r_product = (
+                eigenbasis_projection.T @ scaled_eigenbasis_projection
+            )
+            probe_denominators = (
+                torch.diagonal(inverse_m_r_product) + self.epsilon
+            )
 
             # Weights w_k = (n / N_r) / denom_k
             probe_weights = (n / self.nr) / probe_denominators  # (nr,)
@@ -170,8 +224,12 @@ class CCCPPreconditioner:
             # Build F_gamma in Q-basis:
             #   (1/(1+gamma/n)) * (sum_k w_k * u_bar_k u_bar_k^T + gamma I)
             # In Q basis: u_bar u_bar^T = Q R W R^T Q^T where W = diag(weights)
-            r_weighted_by_probe = self.qr_r * probe_weights.unsqueeze(0)  # (nr, nr)
-            weighted_r_r_transpose = r_weighted_by_probe @ self.qr_r.T  # (nr, nr)
+            r_weighted_by_probe = self.qr_r * probe_weights.unsqueeze(
+                0
+            )  # (nr, nr)
+            weighted_r_r_transpose = (
+                r_weighted_by_probe @ self.qr_r.T
+            )  # (nr, nr)
             torch.mul(
                 weighted_r_r_transpose + self.gamma * eye_nr,
                 1.0 / regularization_scale,
@@ -186,7 +244,8 @@ class CCCPPreconditioner:
                 1.0 - shrinkage
             ) * self.gamma / regularization_scale + shrinkage
             full_space_trace = (
-                shrunken_isotropic_coef * (self.n - self.nr) + shrunken_f_gamma.diagonal().sum()
+                shrunken_isotropic_coef * (self.n - self.nr)
+                + shrunken_f_gamma.diagonal().sum()
             )
             trace_scale = self.n / full_space_trace
 
@@ -199,10 +258,13 @@ class CCCPPreconditioner:
             isotropic_rel = abs(isotropic_coef - isotropic_coef_prev) / (
                 abs(isotropic_coef_prev) + 1e-12
             )
-            q_basis_rel = torch.norm(q_basis_matrix - q_basis_matrix_prev, p="fro").item() / (
-                torch.norm(q_basis_matrix_prev, p="fro").item() + 1e-12
-            )
-            if self.verbose and (iteration % 10 == 0 or max(isotropic_rel, q_basis_rel) < self.tol):
+            q_basis_rel = torch.norm(
+                q_basis_matrix - q_basis_matrix_prev, p="fro"
+            ).item() / (torch.norm(q_basis_matrix_prev, p="fro").item() + 1e-12)
+            if self.verbose and (
+                iteration % 10 == 0
+                or max(isotropic_rel, q_basis_rel) < self.tol
+            ):
                 logger.info(
                     "CCCP iter %d: isotropic_rel=%.3e, q_basis_rel=%.3e, isotropic_coef=%.6f",
                     iteration,
@@ -218,10 +280,14 @@ class CCCPPreconditioner:
 
         # Final eigendecomposition of M = isotropic_coef * I + q_basis_matrix for fast applies
         torch.add(eye_nr * isotropic_coef, q_basis_matrix, out=factored_matrix)
-        self.q_eigenvalues, self.q_eigenvectors = eigh_stable(factored_matrix, eps=self.epsilon)
+        self.q_eigenvalues, self.q_eigenvectors = eigh_stable(
+            factored_matrix, eps=self.epsilon
+        )
 
         if self.verbose:
-            logger.info("CCCP preconditioner built in %d iterations", iteration + 1)
+            logger.info(
+                "CCCP preconditioner built in %d iterations", iteration + 1
+            )
         return self
 
     def apply(self, x: torch.Tensor) -> torch.Tensor:
@@ -239,9 +305,12 @@ class CCCPPreconditioner:
         Raises:
             RuntimeError: If the preconditioner has not been built.
             ValueError: If ``x`` is not 1-D or 2-D.
+
         """
         if self.q_basis is None:
-            raise RuntimeError("Preconditioner has not been built. Call build() first.")
+            raise RuntimeError(
+                "Preconditioner has not been built. Call build() first."
+            )
 
         if x.dim() == 1:
             return self.apply_1d(x)
@@ -257,6 +326,7 @@ class CCCPPreconditioner:
 
         Returns:
             Tensor of the same shape as ``x``.
+
         """
         return preconditioner_apply_core(
             x,
@@ -274,6 +344,7 @@ class CCCPPreconditioner:
 
         Returns:
             Tensor of shape ``(n,)``.
+
         """
         return self.apply_impl(x)
 
@@ -285,6 +356,7 @@ class CCCPPreconditioner:
 
         Returns:
             Tensor of shape ``(n, k)``.
+
         """
         return self.apply_impl(x)
 
@@ -299,6 +371,7 @@ class CCCPPreconditioner:
 
         Raises:
             RuntimeError: If the preconditioner has not been built.
+
         """
         if self.q_basis is None:
             raise RuntimeError("Preconditioner has not been built.")
@@ -307,7 +380,8 @@ class CCCPPreconditioner:
             n, device=self.device, dtype=self.dtype
         )
         preconditioner_covariance = (
-            preconditioner_covariance + self.q_basis @ self.q_basis_matrix @ self.q_basis.T
+            preconditioner_covariance
+            + self.q_basis @ self.q_basis_matrix @ self.q_basis.T
         )
         # Compute Sigma^{-1/2} via eigendecomposition
         eigvals, eigvecs = torch.linalg.eigh(preconditioner_covariance)
@@ -334,6 +408,7 @@ class AdaptivePreconditioner:
         verbose: Whether to log progress.
         device: torch device.
         dtype: torch dtype.
+
     """
 
     def __init__(
@@ -347,7 +422,10 @@ class AdaptivePreconditioner:
         verbose: bool = True,
         device: Optional[torch.device] = None,
         dtype: Optional[torch.dtype] = None,
+        probe_strategy: str = "gaussian",
+        power_iter_steps: int = 3,
     ) -> None:
+        """Initialise the adaptive preconditioner."""
         self.gamma = float(gamma)
         self.num_probes = num_probes
         self.epsilon = float(epsilon)
@@ -355,6 +433,8 @@ class AdaptivePreconditioner:
         self.max_iter = int(max_iter)
         self.tol = float(tol)
         self.verbose = verbose
+        self.probe_strategy = probe_strategy
+        self.power_iter_steps = int(power_iter_steps)
         if device is None:
             device = get_default_device()
         if dtype is None:
@@ -376,7 +456,13 @@ class AdaptivePreconditioner:
         gen = torch.Generator(device=self.device)
         if seed is not None:
             gen.manual_seed(seed)
-        probes = torch.randn(n, num_diag_probes, device=self.device, dtype=self.dtype, generator=gen)
+        probes = torch.randn(
+            n,
+            num_diag_probes,
+            device=self.device,
+            dtype=self.dtype,
+            generator=gen,
+        )
         op_probes = operator(probes)
 
         # Power iteration for largest eigenvalue on a single probe
@@ -387,7 +473,9 @@ class AdaptivePreconditioner:
         lambda_max = torch.dot(v, operator(v)).item()
 
         # Estimate smallest eigenvalue via Rayleigh quotient on random probes
-        rayleighs = torch.sum(probes * op_probes, dim=0) / torch.sum(probes**2, dim=0)
+        rayleighs = torch.sum(probes * op_probes, dim=0) / torch.sum(
+            probes**2, dim=0
+        )
         lambda_min = rayleighs.min().item()
 
         cond = lambda_max / max(lambda_min, 1e-12)
@@ -398,7 +486,9 @@ class AdaptivePreconditioner:
             self._inner = JacobiPreconditioner(diagonal)
             self._inner_name = "jacobi"
             if self.verbose:
-                logger.info("AdaptivePreconditioner selected Jacobi (κ≈%.2e)", cond)
+                logger.info(
+                    "AdaptivePreconditioner selected Jacobi (κ≈%.2e)", cond
+                )
         elif cond < 1e6:
             cccp = CCCPPreconditioner(
                 num_probes=self.num_probes,
@@ -410,15 +500,23 @@ class AdaptivePreconditioner:
                 verbose=self.verbose,
                 device=self.device,
                 dtype=self.dtype,
+                probe_strategy=self.probe_strategy,
+                power_iter_steps=self.power_iter_steps,
             )
             cccp.build(operator, n, seed=seed)
             self._inner = cccp
             self._inner_name = "cccp"
             if self.verbose:
-                logger.info("AdaptivePreconditioner selected CCCP (κ≈%.2e)", cond)
+                logger.info(
+                    "AdaptivePreconditioner selected CCCP (κ≈%.2e)", cond
+                )
         else:
             cccp = CCCPPreconditioner(
-                num_probes=(self.num_probes if self.num_probes is not None else max(200, int(2 * n**0.5)))
+                num_probes=(
+                    self.num_probes
+                    if self.num_probes is not None
+                    else max(200, int(2 * n**0.5))
+                )
                 * 2,
                 gamma=self.gamma,
                 epsilon=self.epsilon,
@@ -428,18 +526,25 @@ class AdaptivePreconditioner:
                 verbose=self.verbose,
                 device=self.device,
                 dtype=self.dtype,
+                probe_strategy=self.probe_strategy,
+                power_iter_steps=self.power_iter_steps,
             )
             cccp.build(operator, n, seed=seed)
             self._inner = cccp
             self._inner_name = "cccp_aggressive"
             if self.verbose:
-                logger.info("AdaptivePreconditioner selected aggressive CCCP (κ≈%.2e)", cond)
+                logger.info(
+                    "AdaptivePreconditioner selected aggressive CCCP (κ≈%.2e)",
+                    cond,
+                )
         return self
 
     def apply(self, x: torch.Tensor) -> torch.Tensor:
         """Apply the selected preconditioner."""
         if self._inner is None:
-            raise RuntimeError("Preconditioner has not been built. Call build() first.")
+            raise RuntimeError(
+                "Preconditioner has not been built. Call build() first."
+            )
         if self._inner_name == "jacobi":
             return self._inner.apply(x)
         return self._inner.apply(x)

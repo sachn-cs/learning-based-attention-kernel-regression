@@ -2,7 +2,11 @@
 
 import torch
 
-from laker.benchmark import BenchmarkResult, benchmark_laker_vs_baselines, benchmark_solver
+from laker.benchmark import (
+    BenchmarkResult,
+    benchmark_laker_vs_baselines,
+    benchmark_solver,
+)
 from laker.kernels import AttentionKernelOperator
 from laker.preconditioner import CCCPPreconditioner
 
@@ -33,7 +37,12 @@ def test_benchmark_solver_with_preconditioner():
     rhs = torch.randn(n, dtype=torch.float64)
 
     pre = CCCPPreconditioner(
-        num_probes=30, gamma=1e-1, max_iter=20, tol=1e-4, verbose=False, dtype=torch.float64
+        num_probes=30,
+        gamma=1e-1,
+        max_iter=20,
+        tol=1e-4,
+        verbose=False,
+        dtype=torch.float64,
     )
     pre.build(op.matvec, n)
 
@@ -88,7 +97,12 @@ def test_benchmark_solver_with_reference():
     exact = torch.linalg.solve(op.to_dense(), rhs)
 
     pre = CCCPPreconditioner(
-        num_probes=30, gamma=1e-1, max_iter=20, tol=1e-4, verbose=False, dtype=torch.float64
+        num_probes=30,
+        gamma=1e-1,
+        max_iter=20,
+        tol=1e-4,
+        verbose=False,
+        dtype=torch.float64,
     )
     pre.build(op.matvec, n)
 
@@ -141,7 +155,12 @@ def test_benchmark_solver_zero_reference():
     rhs = torch.randn(n, dtype=torch.float64)
 
     pre = CCCPPreconditioner(
-        num_probes=20, gamma=1e-1, max_iter=20, tol=1e-4, verbose=False, dtype=torch.float64
+        num_probes=20,
+        gamma=1e-1,
+        max_iter=20,
+        tol=1e-4,
+        verbose=False,
+        dtype=torch.float64,
     )
     pre.build(op.matvec, n)
 

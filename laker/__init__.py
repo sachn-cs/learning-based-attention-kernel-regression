@@ -11,17 +11,20 @@ from laker.data import generate_grid, generate_radio_field
 from laker.embeddings import PositionEmbedding
 from laker.kernels import (
     AttentionKernelOperator,
+    MonotoneSpectrumShaper,
     NystromAttentionKernelOperator,
     RandomFeatureAttentionKernelOperator,
     SKIAttentionKernelOperator,
     SparseKNNAttentionKernelOperator,
+    SpectralAttentionKernelOperator,
+    TwoScaleAttentionKernelOperator,
 )
 from laker.models import LAKERRegressor
 from laker.preconditioner import CCCPPreconditioner
 from laker.solvers import PreconditionedConjugateGradient
 from laker.visualize import plot_convergence, plot_radio_map
 
-__version__ = "0.3.0"
+__version__ = "0.4.0"
 
 __all__ = [
     "get_default_device",
@@ -34,10 +37,13 @@ __all__ = [
     "generate_radio_field",
     "PositionEmbedding",
     "AttentionKernelOperator",
+    "MonotoneSpectrumShaper",
     "NystromAttentionKernelOperator",
     "RandomFeatureAttentionKernelOperator",
     "SparseKNNAttentionKernelOperator",
     "SKIAttentionKernelOperator",
+    "SpectralAttentionKernelOperator",
+    "TwoScaleAttentionKernelOperator",
     "CCCPPreconditioner",
     "PreconditionedConjugateGradient",
     "LAKERRegressor",

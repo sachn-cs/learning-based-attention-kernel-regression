@@ -45,6 +45,7 @@ class SolverBenchmark:
         max_iter: int = 1000,
         lambda_reg: float = 1e-2,
     ) -> None:
+        """Initialise a single-solver benchmark run."""
         self.name = name
         self.operator = operator
         self.preconditioner = preconditioner
@@ -59,9 +60,12 @@ class SolverBenchmark:
 
         Returns:
             ``BenchmarkResult`` with timing and convergence metrics.
+
         """
         n = self.rhs.shape[0]
-        pcg = PreconditionedConjugateGradient(tol=self.tol, max_iter=self.max_iter, verbose=False)
+        pcg = PreconditionedConjugateGradient(
+            tol=self.tol, max_iter=self.max_iter, verbose=False
+        )
 
         start = time.perf_counter()
         if self.preconditioner is not None:
@@ -72,7 +76,8 @@ class SolverBenchmark:
 
         rhs_norm = torch.linalg.norm(self.rhs).item()
         final_res = (
-            torch.linalg.norm(self.operator(solution) - self.rhs).item() / rhs_norm
+            torch.linalg.norm(self.operator(solution) - self.rhs).item()
+            / rhs_norm
             if rhs_norm > 0
             else 0.0
         )
@@ -85,11 +90,18 @@ class SolverBenchmark:
             G_alpha_sol = self.operator(solution)
             resid = G_alpha_sol - y
             r_norm_sq = torch.dot(resid, resid).item()
-            lambda_term = self.lambda_reg * torch.dot(solution, self.operator(solution)).item()
+            lambda_term = (
+                self.lambda_reg
+                * torch.dot(solution, self.operator(solution)).item()
+            )
             obj_sol = r_norm_sq + lambda_term
 
             obj_ref = self.lambda_reg * torch.dot(y, alpha_star).item()
-            obj_gap = abs(obj_sol - obj_ref) / abs(obj_ref) if abs(obj_ref) > 1e-12 else None
+            obj_gap = (
+                abs(obj_sol - obj_ref) / abs(obj_ref)
+                if abs(obj_ref) > 1e-12
+                else None
+            )
 
         return BenchmarkResult(
             name=self.name,
@@ -113,6 +125,7 @@ class BaselineBenchmark:
         pcg_tol: float = 1e-10,
         pcg_max_iter: int = 1000,
     ) -> None:
+        """Initialise a head-to-head benchmark run."""
         self.embeddings = embeddings
         self.measurements = measurements
         self.lambda_reg = lambda_reg
@@ -125,9 +138,12 @@ class BaselineBenchmark:
 
         Returns:
             List of ``BenchmarkResult`` objects for each solver.
+
         """
         n = self.embeddings.shape[0]
-        operator = AttentionKernelOperator(self.embeddings, lambda_reg=self.lambda_reg)
+        operator = AttentionKernelOperator(
+            self.embeddings, lambda_reg=self.lambda_reg
+        )
 
         results = []
 
@@ -215,7 +231,7 @@ def benchmark_solver(
     max_iter: int = 1000,
     lambda_reg: float = 1e-2,
 ) -> BenchmarkResult:
-    """Convenience wrapper around ``SolverBenchmark``.
+    """Wrap ``SolverBenchmark`` for a single solver run.
 
     Args:
         name: Human-readable solver name.
@@ -229,6 +245,7 @@ def benchmark_solver(
 
     Returns:
         ``BenchmarkResult`` with timing and convergence metrics.
+
     """
     return SolverBenchmark(
         name=name,
@@ -250,7 +267,7 @@ def benchmark_laker_vs_baselines(
     pcg_tol: float = 1e-10,
     pcg_max_iter: int = 1000,
 ) -> List[BenchmarkResult]:
-    """Convenience wrapper around ``BaselineBenchmark``.
+    """Wrap ``BaselineBenchmark`` for head-to-head comparison.
 
     Args:
         embeddings: Tensor of shape ``(n, embedding_dim)``.
@@ -262,6 +279,7 @@ def benchmark_laker_vs_baselines(
 
     Returns:
         List of ``BenchmarkResult`` objects for each solver.
+
     """
     return BaselineBenchmark(
         embeddings=embeddings,

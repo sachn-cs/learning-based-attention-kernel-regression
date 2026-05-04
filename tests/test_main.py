@@ -7,7 +7,13 @@ import numpy
 import pytest
 import torch
 
-from laker.__main__ import cmd_fit, cmd_predict, load_tensor, main, setup_logging
+from laker.__main__ import (
+    cmd_fit,
+    cmd_predict,
+    load_tensor,
+    main,
+    setup_logging,
+)
 from laker.models import LAKERRegressor
 
 

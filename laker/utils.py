@@ -17,6 +17,7 @@ def trace_normalize(mat: torch.Tensor) -> torch.Tensor:
 
     Returns:
         Normalized matrix with unit mean eigenvalue.
+
     """
     n = mat.shape[0]
     trace = torch.trace(mat)
@@ -42,6 +43,7 @@ def adaptive_shrinkage_rho(
 
     Returns:
         Shrinkage parameter in ``[0, 1]``.
+
     """
     if num_probes >= problem_size:
         return base_rho
@@ -63,6 +65,7 @@ def eigh_stable(
     Returns:
         Tuple ``(eigenvalues, eigenvectors)`` where eigenvalues are sorted
         in ascending order and clamped to ``[eps, inf)``.
+
     """
     eigenvalues, eigenvectors = torch.linalg.eigh(mat)
     eigenvalues = eigenvalues.clamp(min=eps)
@@ -87,12 +90,15 @@ class GPSurrogate:
         length_scale: float = 0.2,
         sigma_n: float = 1e-4,
     ):
-        """Args:
+        """Initialise the Gaussian-process surrogate for Bayesian optimisation.
+
+        Args:
         bounds: ``(d, 2)`` array with ``[min, max]`` per dimension.
         log_indices: Dimensions that should be searched on log-scale.
         sigma_f: Signal variance.
         length_scale: Initial length scale (same for all dims).
         sigma_n: Observation noise (fixed, small).
+
         """
         self.bounds: numpy.ndarray = bounds.astype(numpy.float64)
         self.d = bounds.shape[0]
@@ -125,7 +131,9 @@ class GPSurrogate:
             + numpy.sum(x2**2, axis=1)
             - 2 * numpy.dot(x1, x2.T)
         )
-        return self.sigma_f**2 * numpy.exp(-0.5 * sqdist / (self.length_scale**2 + 1e-12))
+        return self.sigma_f**2 * numpy.exp(
+            -0.5 * sqdist / (self.length_scale**2 + 1e-12)
+        )
 
     def fit(self, X: numpy.ndarray, y: numpy.ndarray) -> None:
         """Fit GP to observations."""
@@ -146,7 +154,9 @@ class GPSurrogate:
         K = self.kernel(self.X, self.X)
         K[numpy.diag_indices_from(K)] += self.sigma_n**2
         self.L = numpy.linalg.cholesky(K + 1e-8 * numpy.eye(K.shape[0]))
-        self.alpha_vec = numpy.linalg.solve(self.L.T, numpy.linalg.solve(self.L, self.y))
+        self.alpha_vec = numpy.linalg.solve(
+            self.L.T, numpy.linalg.solve(self.L, self.y)
+        )
 
     def marginal_likelihood(self, candidate_length_scale: float) -> float:
         """Compute log marginal likelihood for a candidate length scale."""
@@ -167,7 +177,9 @@ class GPSurrogate:
         self.length_scale = old_length_scale
         return ml
 
-    def predict(self, X_new: numpy.ndarray) -> tuple[numpy.ndarray, numpy.ndarray]:
+    def predict(
+        self, X_new: numpy.ndarray
+    ) -> tuple[numpy.ndarray, numpy.ndarray]:
         """Return posterior mean and variance."""
         X_new_t = self.transform(X_new)
         K_s = self.kernel(self.X, X_new_t)
@@ -183,8 +195,10 @@ class GPSurrogate:
         var = var * (self.y_std**2)
         return mu, var
 
-    def expected_improvement(self, X_new: numpy.ndarray, xi: float = 0.01) -> numpy.ndarray:
-        """Expected Improvement acquisition function."""
+    def expected_improvement(
+        self, X_new: numpy.ndarray, xi: float = 0.01
+    ) -> numpy.ndarray:
+        """Compute the Expected Improvement acquisition function."""
         mu, var = self.predict(X_new)
         sigma = numpy.sqrt(var)
         y_best = self.y.min() * self.y_std + self.y_mean
@@ -197,6 +211,7 @@ class GPSurrogate:
 
 
 def scipy_norm_pdf(x: numpy.ndarray) -> numpy.ndarray:
+    """Evaluate the standard-normal PDF (no scipy dependency)."""
     return numpy.exp(-0.5 * x**2) / numpy.sqrt(2.0 * math.pi)
 
 
@@ -212,5 +227,7 @@ def scipy_norm_cdf(x: numpy.ndarray) -> numpy.ndarray:
     sign = numpy.sign(x)
     x = numpy.abs(x) / numpy.sqrt(2.0)
     t = 1.0 / (1.0 + p * x)
-    y = 1.0 - (((((a5 * t + a4) * t + a3) * t + a2) * t + a1) * t * numpy.exp(-x * x))
+    y = 1.0 - (
+        ((((a5 * t + a4) * t + a3) * t + a2) * t + a1) * t * numpy.exp(-x * x)
+    )
     return 0.5 * (1.0 + sign * y)

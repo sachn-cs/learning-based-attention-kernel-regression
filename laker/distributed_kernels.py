@@ -32,6 +32,7 @@ class DistributedAttentionKernelOperator:
         across devices), not model parallelism.  Peak memory per device is
         ``O(n_local * embedding_dim)`` for the local embedding shard plus
         ``O(n)`` for the full vector.
+
     """
 
     def __init__(
@@ -41,6 +42,7 @@ class DistributedAttentionKernelOperator:
         master_device: Optional[torch.device] = None,
         dtype: Optional[torch.dtype] = None,
     ) -> None:
+        """Initialise the distributed kernel operator."""
         if dtype is None:
             dtype = embeddings.dtype
 
@@ -59,7 +61,10 @@ class DistributedAttentionKernelOperator:
 
         # Detect CUDA devices
         if torch.cuda.is_available():
-            self.devices = [torch.device(f"cuda:{i}") for i in range(torch.cuda.device_count())]
+            self.devices = [
+                torch.device(f"cuda:{i}")
+                for i in range(torch.cuda.device_count())
+            ]
         else:
             self.devices = [master_device]
 
@@ -117,7 +122,11 @@ class DistributedAttentionKernelOperator:
         #   out[start:end] = lambda*x[start:end] + exp(local_embeddings @ full_embed.T) @ x
         x_master = x.to(self.master_device)
         full_embed = torch.cat(
-            [operator.embeddings.to(self.master_device) for operator in self.operators], dim=0
+            [
+                operator.embeddings.to(self.master_device)
+                for operator in self.operators
+            ],
+            dim=0,
         )
 
         outputs = []
@@ -138,12 +147,18 @@ class DistributedAttentionKernelOperator:
             local_out = self.lambda_reg * device_tensor
             for j_start in range(0, self.n, chunk_size_local):
                 j_end = min(j_start + chunk_size_local, self.n)
-                gram_block = local_embeddings @ full_embeddings_device[j_start:j_end].T
+                gram_block = (
+                    local_embeddings @ full_embeddings_device[j_start:j_end].T
+                )
                 exp_safe(gram_block, out=gram_block, skip_clamp=False)
                 if device_tensor.dim() == 1:
-                    local_out[start:end].addmv_(gram_block, device_tensor[j_start:j_end])
+                    local_out[start:end].addmv_(
+                        gram_block, device_tensor[j_start:j_end]
+                    )
                 else:
-                    local_out[start:end].addmm_(gram_block, device_tensor[j_start:j_end])
+                    local_out[start:end].addmm_(
+                        gram_block, device_tensor[j_start:j_end]
+                    )
 
             outputs.append(local_out[start:end].to(self.master_device))
             start = end
@@ -165,7 +180,11 @@ class DistributedAttentionKernelOperator:
             return self.local_op.to_dense()
         # Gather all embeddings to master device
         full_embed = torch.cat(
-            [operator.embeddings.to(self.master_device) for operator in self.operators], dim=0
+            [
+                operator.embeddings.to(self.master_device)
+                for operator in self.operators
+            ],
+            dim=0,
         )
         gram = full_embed @ full_embed.T
         exp_safe(gram, out=gram, skip_clamp=False)
@@ -184,7 +203,11 @@ class DistributedAttentionKernelOperator:
         # Gather all training embeddings
         full_y = (
             torch.cat(
-                [operator.embeddings.to(self.master_device) for operator in self.operators], dim=0
+                [
+                    operator.embeddings.to(self.master_device)
+                    for operator in self.operators
+                ],
+                dim=0,
             )
             if y is None
             else y

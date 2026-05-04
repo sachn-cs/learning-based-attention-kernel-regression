@@ -53,6 +53,24 @@ structure to achieve `O(N_r^3)` CCCP iterations independent of problem size `n`.
 `fit`/`predict` interface.
 - **Exact replicability**: Faithful implementation of Algorithm 1 from the paper
 with numerically stable shrinkage and trace normalization.
+- **Spectral-shaped kernel**: Learned monotone spline reshapes the spectrum of
+  the embedding Gram matrix for better conditioning.
+  Use `kernel_approx="spectral"`.
+- **Bilevel hyperparameter learning**: Implicit differentiation through the PCG
+  fixed-point optimises `lambda_reg` and embedding weights jointly against a
+  validation loss via `fit_bilevel()`.
+- **Uncertainty-aware training**: NLL + calibration penalty objective trains
+  embeddings to produce well-calibrated predictive variances via
+  `fit_uncertainty_aware()`.
+- **Residual corrector**: A tiny MLP trained on `y - y_hat_laker` captures local
+  misspecification without destabilising the core solver via
+  `fit_residual_corrector()`.
+- **Two-scale kernel**: Combines global Nyström + local sparse k-NN for both
+  coherence and sharpness. Use `kernel_approx="twoscale"`.
+- **Continuation schedule**: Solve a decreasing `lambda_reg` path with warm-started
+  PCG for stable tracking to sharper solutions via `fit_continuation()`.
+- **Leverage-score landmarks**: Nyström landmark selection via ridge leverage
+  scores (`landmark_method="leverage"`).
 - **Modular design**: Swap embeddings, kernels, solvers, and preconditioners
 independently.
 
@@ -361,6 +379,88 @@ model = LAKERRegressor(
     lambda_reg=1e-2,
     distributed=True,
     device="cuda",
+)
+model.fit(x_train, y_train)
+```
+
+### Spectral-shaped kernel
+
+```python
+model = LAKERRegressor(
+    embedding_dim=10,
+    kernel_approx="spectral",
+    spectral_knots=5,
+    dtype=torch.float64,
+)
+model.fit(x_train, y_train)
+```
+
+### Two-scale kernel
+
+```python
+model = LAKERRegressor(
+    embedding_dim=10,
+    kernel_approx="twoscale",
+    num_landmarks=100,
+    k_neighbors=30,
+    dtype=torch.float64,
+)
+model.fit(x_train, y_train)
+```
+
+### Bilevel hyperparameter learning
+
+```python
+model = LAKERRegressor(embedding_dim=10, dtype=torch.float64, verbose=True)
+model.fit(x_train, y_train)
+model.fit_bilevel(
+    x_train, y_train, x_val, y_val,
+    lr=1e-3, epochs=20, patience=5,
+)
+```
+
+### Uncertainty-aware training
+
+```python
+model = LAKERRegressor(embedding_dim=10, dtype=torch.float64, verbose=True)
+model.fit(x_train, y_train)
+model.fit_uncertainty_aware(
+    x_train, y_train,
+    lr=1e-3, epochs=50, beta=0.1, patience=5,
+)
+var = model.predict_variance(x_test)
+```
+
+### Residual corrector
+
+```python
+model = LAKERRegressor(embedding_dim=10, verbose=True)
+model.fit(x_train, y_train)
+model.fit_residual_corrector(
+    x_train, y_train,
+    epochs=200, patience=10, weight_decay=1e-2,
+)
+```
+
+### Continuation schedule
+
+```python
+model = LAKERRegressor(embedding_dim=10, dtype=torch.float64, verbose=True)
+model.fit_continuation(
+    x_train, y_train,
+    lambda_max=1.0, lambda_min=1e-2, n_stages=5,
+)
+```
+
+### Leverage-score Nyström landmarks
+
+```python
+model = LAKERRegressor(
+    embedding_dim=10,
+    kernel_approx="nystrom",
+    num_landmarks=100,
+    landmark_method="leverage",
+    landmark_pilot_size=200,
 )
 model.fit(x_train, y_train)
 ```

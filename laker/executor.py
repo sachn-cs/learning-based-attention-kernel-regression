@@ -22,6 +22,7 @@ class Executor(ABC):
 
         Args:
             title: Human-readable section title.
+
         """
 
     @abstractmethod
@@ -31,6 +32,7 @@ class Executor(ABC):
         Args:
             key: Result identifier.
             value: Result value (any JSON-serialisable type).
+
         """
 
     @abstractmethod
@@ -41,6 +43,7 @@ class Executor(ABC):
             name: Metric identifier.
             value: Numeric value.
             fmt: Python format specification for the value.
+
         """
 
     @abstractmethod
@@ -53,4 +56,5 @@ class Executor(ABC):
 
         Returns:
             The return value of ``operation``.
+
         """

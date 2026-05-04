@@ -37,7 +37,9 @@ def get_default_device() -> torch.device:
     return DEFAULT_DEVICE
 
 
-def set_default_device(device: Optional[Union[str, torch.device]] = None) -> torch.device:
+def set_default_device(
+    device: Optional[Union[str, torch.device]] = None,
+) -> torch.device:
     """Set and return the default compute device.
 
     If ``device`` is None, auto-select CUDA if available, else CPU.
@@ -47,6 +49,7 @@ def set_default_device(device: Optional[Union[str, torch.device]] = None) -> tor
 
     Returns:
         The resolved torch.device.
+
     """
     global DEFAULT_DEVICE
     if device is None:
@@ -87,6 +90,7 @@ def maybe_compile(func, mode: str = "reduce-overhead"):
 
     Returns:
         Compiled function or the original function.
+
     """
     if hasattr(torch, "compile"):
         import warnings
@@ -111,6 +115,7 @@ def to_tensor(
 
     Returns:
         A torch.Tensor with the specified device and dtype.
+
     """
     if device is None:
         device = get_default_device()
@@ -119,5 +124,3 @@ def to_tensor(
     if isinstance(data, torch.Tensor):
         return data.to(device=device, dtype=dtype)
     return torch.as_tensor(data, device=device, dtype=dtype)
-
-

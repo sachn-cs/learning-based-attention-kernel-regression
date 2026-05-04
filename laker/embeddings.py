@@ -13,7 +13,7 @@ logger = logging.getLogger(__name__)
 
 
 class PositionEmbedding(nn.Module):
-    """Deterministic position-driven embedding used in the LAKER paper.
+    r"""Deterministic position-driven embedding used in the LAKER paper.
 
     Maps each spatial coordinate vector ``x \\in R^{dx}`` to a ``de``-dimensional
     feature vector via a fixed non-linear transformation (random Fourier features
@@ -37,6 +37,7 @@ class PositionEmbedding(nn.Module):
         can therefore produce non-deterministic results.  Instantiate
         ``PositionEmbedding`` objects sequentially, or pass a pre-initialised
         ``embedding_module`` to ``LAKERRegressor`` if thread safety is required.
+
     """
 
     def __init__(
@@ -49,6 +50,7 @@ class PositionEmbedding(nn.Module):
         device: Optional[torch.device] = None,
         dtype: Optional[torch.dtype] = None,
     ) -> None:
+        """Initialise the position embedding module."""
         super().__init__()
         self.input_dim = input_dim
         self.embedding_dim = embedding_dim
@@ -67,11 +69,20 @@ class PositionEmbedding(nn.Module):
         gen = torch.Generator(device=device).manual_seed(seed)
         self.register_buffer(
             "freq",
-            torch.randn(input_dim, num_fourier, generator=gen, device=device, dtype=dtype) / sigma,
+            torch.randn(
+                input_dim,
+                num_fourier,
+                generator=gen,
+                device=device,
+                dtype=dtype,
+            )
+            / sigma,
         )
         self.register_buffer(
             "phase",
-            torch.rand(num_fourier, generator=gen, device=device, dtype=dtype) * 2.0 * math.pi,
+            torch.rand(num_fourier, generator=gen, device=device, dtype=dtype)
+            * 2.0
+            * math.pi,
         )
 
         # 2. MLP weights are initialised manually with a local Generator so the
@@ -88,13 +99,23 @@ class PositionEmbedding(nn.Module):
                     # kaiming_uniform_-style init using local Generator
                     bound = math.sqrt(1.0 / layer.weight.shape[1])
                     layer.weight.copy_(
-                        torch.rand(layer.weight.shape, generator=gen, device=device, dtype=dtype)
+                        torch.rand(
+                            layer.weight.shape,
+                            generator=gen,
+                            device=device,
+                            dtype=dtype,
+                        )
                         * (2 * bound)
                         - bound
                     )
                     if layer.bias is not None:
                         layer.bias.copy_(
-                            torch.rand(layer.bias.shape, generator=gen, device=device, dtype=dtype)
+                            torch.rand(
+                                layer.bias.shape,
+                                generator=gen,
+                                device=device,
+                                dtype=dtype,
+                            )
                             * (2 * bound)
                             - bound
                         )
@@ -109,6 +130,7 @@ class PositionEmbedding(nn.Module):
 
         Returns:
             Tensor of shape ``(n, embedding_dim)``.
+
         """
         if x.dim() == 1:
             x = x.unsqueeze(0)

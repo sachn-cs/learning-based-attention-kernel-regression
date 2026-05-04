@@ -170,6 +170,28 @@ Retains only the $k$ largest kernel values per row (nearest neighbours in Euclid
 
 Builds a regular product grid in the embedding space and uses multilinear interpolation weights $W$ so that $G \approx W G_{\text{grid}} W^{\!\top}$. The grid kernel $G_{\text{grid}}$ is materialised explicitly (since the grid is small), and matvecs cost $O(n \, g)$ where $g$ is the grid size. SKI is practical when the embedding dimension $d_e \leq 10$.
 
+### Two-Scale Kernel
+
+Combines a global Nyström low-rank term with a local sparse k-NN graph:
+
+$$K = \alpha \, K_{\text{global}} + (1 - \alpha) \, K_{\text{local}}$$
+
+The global term captures long-range structure; the local term adds sharpness near
+data points. This is useful when the data has both smooth global trends and
+local discontinuities.
+
+### Spectral-Shaped Kernel
+
+Replaces the plain exponential with a matrix function of the embedding Gram
+matrix $S = E E^{\top}$:
+
+$$K = U \, \operatorname{diag}\!\bigl(\exp(g(\sigma_i^2))\bigr) \, U^{\top}$$
+
+where $E = U \Sigma V^{\top}$ is the economy SVD and $g$ is a learned monotone
+spline. Because the spline is constrained to be monotone (all coefficients are
+positive via softplus), the shaped spectrum preserves positive definiteness.
+Direct spectral control improves conditioning and can reduce PCG iteration count.
+
 ---
 
 ## Practical Take-aways

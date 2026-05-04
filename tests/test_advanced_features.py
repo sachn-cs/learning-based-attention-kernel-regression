@@ -343,10 +343,16 @@ def test_learned_embeddings():
         verbose=False,
     )
     model.fit(x, y)
-    initial_res = torch.linalg.norm(model.kernel_operator.matvec(model.alpha) - y).item()
+    initial_res = torch.linalg.norm(
+        model.kernel_operator.matvec(model.alpha) - y
+    ).item()
 
-    model.fit_learned_embeddings(x, y, lr=1e-2, epochs=20, rebuild_freq=5, patience=10)
-    final_res = torch.linalg.norm(model.kernel_operator.matvec(model.alpha) - y).item()
+    model.fit_learned_embeddings(
+        x, y, lr=1e-2, epochs=20, rebuild_freq=5, patience=10
+    )
+    final_res = torch.linalg.norm(
+        model.kernel_operator.matvec(model.alpha) - y
+    ).item()
     assert final_res <= initial_res
 
 
@@ -359,7 +365,9 @@ def test_distributed_fallback():
     e = torch.randn(n, 10, dtype=torch.float64)
     x = torch.randn(n, dtype=torch.float64)
 
-    dist_op = DistributedAttentionKernelOperator(e, lambda_reg=1e-2, dtype=torch.float64)
+    dist_op = DistributedAttentionKernelOperator(
+        e, lambda_reg=1e-2, dtype=torch.float64
+    )
     assert dist_op.single_device
 
     y_dist = dist_op.matvec(x)
@@ -391,6 +399,103 @@ def test_ski_integration():
     )
     model.fit(x, y)
     assert model.alpha is not None
+
+    x_test = torch.rand(10, 2, dtype=torch.float64) * 100.0
+    y_pred = model.predict(x_test)
+    assert y_pred.shape == (10,)
+
+
+def test_spectral_integration():
+    """LAKERRegressor with spectral kernel should fit and predict."""
+    torch.manual_seed(42)
+    n = 100
+    x = torch.rand(n, 2, dtype=torch.float64) * 100.0
+    y = torch.randn(n, dtype=torch.float64)
+
+    model = LAKERRegressor(
+        embedding_dim=10,
+        lambda_reg=1e-2,
+        gamma=1e-1,
+        num_probes=50,
+        cccp_max_iter=20,
+        cccp_tol=1e-4,
+        pcg_tol=1e-6,
+        pcg_max_iter=500,
+        kernel_approx="spectral",
+        spectral_knots=5,
+        dtype=torch.float64,
+        verbose=False,
+    )
+    model.fit(x, y)
+    assert model.alpha is not None
+
+    x_test = torch.rand(10, 2, dtype=torch.float64) * 100.0
+    y_pred = model.predict(x_test)
+    assert y_pred.shape == (10,)
+
+
+def test_twoscale_integration():
+    """LAKERRegressor with two-scale kernel should fit and predict."""
+    torch.manual_seed(42)
+    n = 100
+    x = torch.rand(n, 2, dtype=torch.float64) * 100.0
+    y = torch.randn(n, dtype=torch.float64)
+
+    model = LAKERRegressor(
+        embedding_dim=10,
+        lambda_reg=1e-2,
+        gamma=1e-1,
+        num_probes=50,
+        cccp_max_iter=20,
+        cccp_tol=1e-4,
+        pcg_tol=1e-6,
+        pcg_max_iter=500,
+        kernel_approx="twoscale",
+        num_landmarks=50,
+        k_neighbors=20,
+        dtype=torch.float64,
+        verbose=False,
+    )
+    model.fit(x, y)
+    assert model.alpha is not None
+
+    x_test = torch.rand(10, 2, dtype=torch.float64) * 100.0
+    y_pred = model.predict(x_test)
+    assert y_pred.shape == (10,)
+
+
+def test_continuation_integration():
+    """fit_continuation should produce a fitted model with decreasing schedule."""
+    torch.manual_seed(42)
+    n = 100
+    x = torch.rand(n, 2, dtype=torch.float64) * 100.0
+    y = torch.randn(n, dtype=torch.float64)
+
+    model = LAKERRegressor(
+        embedding_dim=10,
+        lambda_reg=1e-2,
+        gamma=1e-1,
+        num_probes=50,
+        cccp_max_iter=20,
+        cccp_tol=1e-4,
+        pcg_tol=1e-6,
+        pcg_max_iter=500,
+        dtype=torch.float64,
+        verbose=False,
+    )
+    model.fit_continuation(x, y, lambda_max=1.0, lambda_min=1e-2, n_stages=4)
+
+    assert model.alpha is not None
+    assert hasattr(model, "path_")
+    path = model.path_
+    assert len(path["lambda_reg"]) == 4
+    assert (
+        path["lambda_reg"][0]
+        > path["lambda_reg"][1]
+        > path["lambda_reg"][2]
+        > path["lambda_reg"][3]
+    )
+    assert abs(path["lambda_reg"][-1] - 1e-2) < 1e-10
 
     x_test = torch.rand(10, 2, dtype=torch.float64) * 100.0
     y_pred = model.predict(x_test)

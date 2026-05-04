@@ -103,3 +103,103 @@ def test_regressor_score():
     model.fit(x, y)
     score = model.score(x, y)
     assert score <= 0.0  # negative RMSE
+
+
+def test_residual_corrector_fitted_and_active():
+    """Residual corrector should be trained and produce non-zero corrections."""
+    torch.manual_seed(42)
+    n = 100
+    x = torch.rand(n, 2) * 100.0
+    y = torch.randn(n)
+
+    model = LAKERRegressor(
+        embedding_dim=6,
+        lambda_reg=1e-2,
+        num_probes=40,
+        cccp_max_iter=20,
+        verbose=False,
+    )
+    model.fit(x, y)
+
+    assert model.residual_corrector is None
+
+    model.fit_residual_corrector(x, y, epochs=100, patience=10)
+
+    assert model.residual_corrector is not None
+    with torch.no_grad():
+        corr = model.residual_corrector(x).squeeze()
+    assert torch.norm(corr).item() > 0.0
+
+
+def test_bilevel_runs_and_produces_fitted_model():
+    """Bilevel hyperparameter learning should run and produce a fitted model."""
+    torch.manual_seed(42)
+    n = 60
+    x = torch.rand(n, 2, dtype=torch.float64) * 100.0
+    y = torch.randn(n, dtype=torch.float64)
+
+    n_val = 12
+    x_train = x[n_val:]
+    y_train = y[n_val:]
+    x_val = x[:n_val]
+    y_val = y[:n_val]
+
+    model = LAKERRegressor(
+        embedding_dim=4,
+        lambda_reg=1e-1,
+        num_probes=30,
+        cccp_max_iter=10,
+        pcg_tol=1e-6,
+        pcg_max_iter=200,
+        dtype=torch.float64,
+        verbose=False,
+    )
+    model.fit(x_train, y_train)
+
+    base_pred = model.predict(x_val)
+    base_loss = torch.mean((base_pred - y_val) ** 2).item()
+
+    model.fit_bilevel(
+        x_train, y_train, x_val, y_val, lr=5e-3, epochs=5, patience=3
+    )
+
+    assert model.alpha is not None
+    bilevel_pred = model.predict(x_val)
+    bilevel_loss = torch.mean((bilevel_pred - y_val) ** 2).item()
+
+    # Bilevel should not catastrophically worsen validation loss
+    assert bilevel_loss < base_loss * 5.0
+
+
+def test_uncertainty_aware_runs_and_produces_fitted_model():
+    """Uncertainty-aware training should run and produce a fitted model."""
+    torch.manual_seed(42)
+    n = 60
+    x = torch.rand(n, 2, dtype=torch.float64) * 100.0
+    y = torch.randn(n, dtype=torch.float64)
+
+    model = LAKERRegressor(
+        embedding_dim=4,
+        lambda_reg=1e-1,
+        num_probes=30,
+        cccp_max_iter=10,
+        pcg_tol=1e-6,
+        pcg_max_iter=200,
+        dtype=torch.float64,
+        verbose=False,
+    )
+    model.fit(x, y)
+
+    assert model.alpha is not None
+
+    model.fit_uncertainty_aware(
+        x, y, lr=1e-2, epochs=10, beta=0.1, variance_subset=0.3, patience=3
+    )
+
+    assert model.alpha is not None
+    x_test = torch.rand(10, 2, dtype=torch.float64) * 100.0
+    y_pred = model.predict(x_test)
+    assert y_pred.shape == (10,)
+    var = model.predict_variance(x_test)
+    assert var.shape == (10,)
+    assert torch.all(var >= 0)

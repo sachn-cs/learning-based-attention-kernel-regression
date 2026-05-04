@@ -16,10 +16,10 @@ Based on [*Accelerating Regularized Attention Kernel Regression for Spectrum Car
 
 ## Contents
 
-- [Quick Start](quickstart.md) — Installation, basic usage, and CLI
-- [Mathematical Background](theory.md) — Problem formulation, CCCP preconditioner, complexity analysis
+- [Quick Start](quickstart.md) — Installation, basic usage, CLI, and new features
+- [Mathematical Background](theory.md) — Problem formulation, CCCP preconditioner, kernel approximations
 - [API Reference](api.md) — Complete reference for all public classes and functions
-- [Examples](examples.md) — Reproducible worked examples and benchmarking
+- [Examples](examples.md) — Reproducible worked examples: spectral, bilevel, uncertainty, and more
 - [Design Patterns](patterns.md) — Conventions for executors, naming, and logging
 
 ---

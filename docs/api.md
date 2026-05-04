@@ -47,6 +47,10 @@ Learning-based Attention Kernel Regression estimator. Fits the regularised atten
 - `partial_fit(x_new, y_new, ...)` — Incremental update with new observations.
 - `fit_path(x, y, lambda_reg_grid, ...)` — Fit a regularisation path over multiple $\lambda$ values.
 - `fit_learned_embeddings(x, y, lr=1e-3, epochs=50, ...)` — End-to-end optimisation of embedding MLP weights.
+- `fit_bilevel(x_train, y_train, x_val, y_val, lr=1e-3, epochs=20, ...)` — Bilevel hyperparameter learning via implicit differentiation.
+- `fit_uncertainty_aware(x, y, lr=1e-3, epochs=50, beta=0.1, ...)` — Train embeddings with NLL + calibration penalty.
+- `fit_residual_corrector(x, y, val_fraction=0.2, epochs=200, ...)` — Train a small MLP residual corrector.
+- `fit_continuation(x, y, lambda_max=None, lambda_min=None, n_stages=5, ...)` — Fit with a decreasing regularisation schedule.
 - `save(path)` — Serialize the fitted model to disk.
 - `load(path)` — Deserialize a model from disk (class method).
 - `score(x, y)` — Negative RMSE for sklearn compatibility.
@@ -134,6 +138,50 @@ class SKIAttentionKernelOperator(
 )
 ```
 
+### `TwoScaleAttentionKernelOperator`
+
+Two-scale kernel combining global Nyström + local sparse k-NN.
+
+```python
+class TwoScaleAttentionKernelOperator(
+    embeddings: torch.Tensor,
+    lambda_reg: float = 1e-2,
+    alpha: float = 0.5,
+    num_landmarks: Optional[int] = None,
+    k_neighbors: Optional[int] = None,
+    chunk_size: Optional[int] = None,
+    device: Optional[torch.device] = None,
+    dtype: Optional[torch.dtype] = None,
+)
+```
+
+### `SpectralAttentionKernelOperator`
+
+Spectral-shaped attention kernel via learned monotone spectrum shaper.
+
+```python
+class SpectralAttentionKernelOperator(
+    embeddings: torch.Tensor,
+    lambda_reg: float = 1e-2,
+    num_knots: int = 5,
+    device: Optional[torch.device] = None,
+    dtype: Optional[torch.dtype] = None,
+)
+```
+
+### `MonotoneSpectrumShaper`
+
+Learned monotone spline for reshaping eigenvalues. Parameterised as a positive
+linear combination of shifted softplus functions plus a positive linear term.
+
+```python
+class MonotoneSpectrumShaper(num_knots: int = 5)
+```
+
+- `set_knots(min_val, max_val)` — Place fixed knots linearly across the
+  eigenvalue range.
+- `forward(x)` — Apply the learned monotone function.
+
 ### `DistributedAttentionKernelOperator`
 
 Multi-GPU wrapper that shards embeddings across CUDA devices.
@@ -171,11 +219,77 @@ class CCCPPreconditioner(
 
 **Key methods:**
 
-- `build(operator, n)` — Learn the preconditioner for an $n \times n$ operator. Returns `self`.
+- `build(operator, n, seed=None)` — Learn the preconditioner for an $n \times n$ operator. Returns `self`.
 - `apply(x)` — Apply $P$ to a vector or batch of vectors.
 - `apply_1d(x)` — Apply $P$ to a single vector.
 - `apply_2d(x)` — Apply $P$ to a matrix.
 - `to_dense()` — Materialise the full dense preconditioner (for debugging).
+
+### `AdaptivePreconditioner`
+
+Spectrum-aware preconditioner with power-iteration-biased probes and
+orthogonalised blocks. Select via `preconditioner_strategy="adaptive"`.
+
+---
+
+## Core Pipeline
+
+### `LAKERCore`
+
+Encapsulates the standard LAKER solve/predict pipeline. Stores hyperparameters
+and provides methods that operate on fitted state passed as arguments. Designed
+to be composed by `LAKERRegressor`.
+
+**Key methods:**
+
+- `compute_embeddings(x, embedding_model=None)` — Build or reuse embeddings.
+- `build_kernel_operator(embeddings, lambda_reg=None, chunk_size=None)` —
+  Construct the kernel operator.
+- `build_preconditioner(matvec, n, ...)` — Learn the preconditioner.
+- `solve_pcg(kernel_operator, preconditioner, rhs, x0=None)` — Solve with PCG.
+- `predict(x, embedding_model, embeddings, kernel_operator, alpha, ...)` —
+  Predict at query locations.
+- `predict_variance(x, embedding_model, embeddings, kernel_operator, ...)` —
+  Predictive variance.
+- `predict_train(...)` — Differentiable version of `predict`.
+- `predict_variance_train(...)` — Differentiable version of `predict_variance`.
+- `condition_number(kernel_operator, preconditioner)` — Estimated condition number.
+
+### `EmbeddingTrainer`
+
+Trains embedding models and residual correctors.
+
+**Key methods:**
+
+- `fit_learned_embeddings(regressor, x, y, lr, epochs, ...)` — Optimise embedding
+  MLP weights end-to-end.
+- `fit_residual_corrector(regressor, x, y, ...)` — Train residual corrector.
+- `fit_bilevel(regressor, x_train, y_train, x_val, y_val, ...)` — Bilevel learning.
+- `fit_uncertainty_aware(regressor, x, y, lr, epochs, beta, ...)` —
+  Uncertainty-aware training.
+
+### `HyperparameterSearch`
+
+Validation-based hyperparameter search.
+
+- `fit_with_search(regressor, x, y, ...)` — Grid search.
+- `fit_with_bo(regressor, x, y, ...)` — Bayesian optimisation.
+
+### `StreamingUpdater`
+
+Incremental updates and continuation-path fitting.
+
+- `partial_fit(regressor, x_new, y_new, ...)` — Incremental update.
+- `fit_path(regressor, x, y, lambda_reg_grid, ...)` — Regularisation path.
+- `fit_continuation(regressor, x, y, lambda_max, lambda_min, ...)` —
+  Continuation schedule.
+
+### `ModelPersistence`
+
+Save/load helper.
+
+- `save(regressor, path)` — Serialise to disk.
+- `load(path)` — Deserialise from disk.
 
 ---
 
@@ -228,6 +342,25 @@ class JacobiPreconditioner(diagonal: torch.Tensor)
 ```
 
 - `apply(x)` — Element-wise multiply by the inverse diagonal.
+
+---
+
+## Correctors
+
+### `ResidualCorrector`
+
+Tiny MLP that predicts the residual `y - y_hat_laker`.
+
+```python
+class ResidualCorrector(
+    input_dim: int,
+    output_dim: int = 1,
+    hidden_dim: int = 32,
+    dropout: float = 0.1,
+)
+```
+
+- `forward(x)` — Predict residual correction.
 
 ---
 
