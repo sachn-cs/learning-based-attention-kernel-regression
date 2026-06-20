@@ -8,7 +8,7 @@ sys.path.insert(0, os.path.abspath(".."))
 project = "LAKER"
 copyright = "2026, LAKER Contributors"
 author = "LAKER Contributors"
-release = "0.3.0"
+release = "0.4.0"
 
 extensions = [
     "sphinx.ext.autodoc",

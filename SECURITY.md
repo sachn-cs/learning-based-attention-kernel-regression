@@ -6,8 +6,9 @@ The following versions of LAKER are currently supported with security updates:
 
 | Version | Supported          |
 | ------- | ------------------ |
-| 0.2.x   | :white_check_mark: |
-| < 0.2   | :x:                |
+| 0.4.x   | :white_check_mark: |
+| 0.3.x   | :white_check_mark: |
+| < 0.3   | :x:                |
 
 ## Reporting a Vulnerability
 
@@ -35,3 +36,4 @@ When using LAKER:
 - Keep dependencies up to date (`pip install -U laker`)
 - Only load model checkpoints from trusted sources
 - Be cautious when running untrusted example scripts
+- Review model files before loading (untrusted Pickle files can execute arbitrary code)

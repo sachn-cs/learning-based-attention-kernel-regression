@@ -8,8 +8,8 @@ feature requests, documentation improvements, and code contributions.
 1. Fork the repository on GitHub.
 2. Clone your fork locally:
    ```bash
-   git clone https://github.com/your-username/kernelSC.git
-   cd kernelSC
+   git clone https://github.com/your-username/laker.git
+   cd laker
    ```
 3. Install in editable mode with development dependencies:
    ```bash
@@ -18,16 +18,82 @@ feature requests, documentation improvements, and code contributions.
 
 ## Development Workflow
 
+### Branch Naming
+
+Use descriptive branch names with conventional prefixes:
+
+| Prefix | Purpose | Example |
+|--------|---------|---------|
+| `feat/` | New feature | `feat/add-batch-predict` |
+| `fix/` | Bug fix | `fix/pcg-convergence-nan` |
+| `docs/` | Documentation | `docs/update-api-reference` |
+| `refactor/` | Code restructuring | `refactor/split-solver-module` |
+| `test/` | Adding tests | `test/add-nystrom-edge-cases` |
+| `chore/` | Maintenance | `chore/update-dependencies` |
+
+### Commit Conventions
+
+This project follows [Conventional Commits](https://www.conventionalcommits.org/).
+Use the following format:
+
+```
+<type>(<scope>): <description>
+
+[optional body]
+
+[optional footer(s)]
+```
+
+**Types:**
+
+| Type | Description |
+|------|-------------|
+| `feat` | A new feature |
+| `fix` | A bug fix |
+| `docs` | Documentation only changes |
+| `style` | Code style changes (formatting, missing semi-colons, etc.) |
+| `refactor` | Code change that neither fixes a bug nor adds a feature |
+| `perf` | Performance improvement |
+| `test` | Adding or updating tests |
+| `chore` | Build process, CI, or auxiliary tool changes |
+
+**Examples:**
+
+```
+feat(kernels): add batch prediction for multiple query sets
+fix(pcg): handle NaN in residual computation
+docs(readme): add benchmarks section
+refactor(preconditioner): extract CCCP into standalone class
+test(kernels): add edge cases for Nyström approximation
+chore(ci): add Python 3.13 to test matrix
+```
+
 ### Code Style
 
 We use the following tools to maintain code quality:
 
-- **Black** for formatting: `black laker/ tests/ examples/`
-- **isort** for import sorting: `isort laker/ tests/ examples/`
-- **flake8** for linting: `flake8 laker/ tests/ examples/`
+- **Black** for formatting: `black laker/ tests/ examples/ benchmarks/`
+- **isort** for import sorting: `isort laker/ tests/ examples/ benchmarks/`
+- **flake8** for linting: `flake8 laker/ tests/ examples/ benchmarks/`
 - **mypy** for type checking: `mypy laker/`
 
-All of these are configured in `pyproject.toml`.
+All of these are configured in `pyproject.toml` and `.flake8`.
+
+Run all checks before submitting:
+
+```bash
+black --check laker/ tests/ examples/ benchmarks/
+isort --check-only laker/ tests/ examples/ benchmarks/
+flake8 laker/ tests/ examples/ benchmarks/
+mypy laker/
+```
+
+Or auto-fix formatting:
+
+```bash
+black laker/ tests/ examples/ benchmarks/
+isort laker/ tests/ examples/ benchmarks/
+```
 
 ### Testing
 
@@ -41,6 +107,7 @@ For coverage reporting:
 
 ```bash
 pytest tests/ --cov=laker --cov-report=html
+open htmlcov/index.html
 ```
 
 ### Docstrings
@@ -52,12 +119,23 @@ All public classes and functions must have Google-style docstrings with:
 - `Returns:` section for return values.
 - `Examples:` section where applicable.
 
-### Commit Messages
+### Pull Request Process
 
-- Use the present tense ("Add feature" not "Added feature").
-- Use the imperative mood ("Move cursor to..." not "Moves cursor to...").
-- Limit the first line to 72 characters or less.
-- Reference issues and pull requests liberally after the first line.
+1. Create a new branch for your feature or bugfix from `main`.
+2. Make your changes and ensure all tests pass.
+3. Update documentation and the changelog if applicable.
+4. Open a pull request with a clear description of the changes.
+5. Link the related issue if one exists.
+6. Wait for CI to pass and request a review.
+
+### Coding Standards
+
+- Keep functions focused and under 50 lines where possible.
+- Use type hints for all public function signatures.
+- Prefer composition over inheritance.
+- Use `logging` instead of `print` for diagnostic output.
+- Never commit secrets, API keys, or credentials.
+- Follow existing code patterns in the module you are modifying.
 
 ## Reporting Bugs
 
@@ -78,4 +156,5 @@ When reporting bugs, please include:
 ## Code of Conduct
 
 Be respectful and constructive in all interactions. We are committed to providing
-a welcoming and inspiring community for everyone.
+a welcoming and inspiring community for everyone. See
+[CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md) for details.
